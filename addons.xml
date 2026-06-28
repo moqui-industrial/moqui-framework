@@ -85,6 +85,10 @@
     <!-- Moqui Web and Demo Sites -->
     <component name="moqui-org" group="moqui" version="" branch="master"/><!-- no releases -->
     <component name="moqui-demo" group="moqui" version="" branch="master"/><!-- no releases -->
+    <component name="moqui-math" group="moqui" version="1.0.0" branch="main"/><!-- no releases -->
+    <component name="moqui-jep" group="moqui" version="1.0.0" branch="master"/><!-- no releases -->
+    <component name="moqui-device" group="moqui" version="1.0.0" branch="main"/><!-- no releases -->
+    <component name="moqui-plc4j" group="moqui" version="1.0.0" branch="main"/><!-- no releases -->
 
     <!-- Third Party Components -->
     <component name="moqui-captcha" group="shendepu" version="" branch="master"/><!-- no releases -->

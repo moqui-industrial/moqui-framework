@@ -82,6 +82,9 @@
     <!-- Kibana Proxy Servlet settings -->
     <default-property name="kibana_host" value="127.0.0.1"/>
     <default-property name="kibana_port" value="5601"/>
+    <!-- Grafana Proxy Servlet settings -->
+    <default-property name="grafana_host" value="127.0.0.1"/>
+    <default-property name="grafana_port" value="3000"/>
 
     <tools worker-queue="65535" worker-pool-core="16" worker-pool-max="32" worker-pool-alive="60"
             empty-db-load="${entity_empty_db_load}"
@@ -209,6 +212,10 @@
                 <init-param name="permission" value="KibanaRemote"/>
                 <url-pattern>/kibana/*</url-pattern>
             </filter>
+            <filter name="GrafanaAuthFilter" class="org.moqui.impl.webapp.MoquiAuthFilter" async-supported="true">
+                <init-param name="permission" value="GrafanaRemote"/>
+                <url-pattern>/grafana/*</url-pattern>
+            </filter>
 
             <!-- Moqui Session Listener (necessary to handle expired sessions, etc) -->
             <listener class="org.moqui.impl.webapp.MoquiSessionListener"/>
@@ -233,6 +240,14 @@
                 <init-param name="proxyTo" value="http://${kibana_host}:${kibana_port}"/>
                 <init-param name="prefix" value="/kibana"/>
                 <url-pattern>/kibana/*</url-pattern>
+            </servlet>
+            <servlet name="GrafanaProxy" class="org.eclipse.jetty.ee11.proxy.ProxyServlet$Transparent" load-on-startup="1" async-supported="true">
+                <!-- this proxies to a Grafana instance run locally, in another container, etc -->
+                <!-- in grafana.yml set root_url = %(protocol)s://%(domain)s:%(http_port)s/grafana
+                        or using the environment variable set GF_SERVER_ROOT_URL=%(protocol)s://%(domain)s:%(http_port)s/grafana -->
+                <init-param name="proxyTo" value="http://${grafana_host}:${grafana_port}"/>
+                <init-param name="prefix" value="/grafana"/>
+                <url-pattern>/grafana/*</url-pattern>
             </servlet>
 
             <!-- timeout session in 60 minutes without a request -->
