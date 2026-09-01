@@ -1,5 +1,43 @@
 # Moqui Framework Release Notes
 
+## Release 4.1.0 - Not Yet Released
+
+### XML Screen transition authorization
+
+- Added `transition.@authz-action` (`view`, `create`, `update`, `delete`, `all`).
+  Transitions are authorized for that action when they run and when links check
+  whether they are permitted. They are no longer always treated as VIEW.
+  - Default if omitted: a transition-level `service-call` uses that service's
+    authz-action (or verb); `read-only` transitions default to view; other
+    transitions with actions default to update; redirect-only transitions default
+    to view. `read-only` is still about insecure URL parameters, not authz.
+- Reviewed Tools/System transitions so privileged ones set `authz-action`
+  explicitly (`update` or `all`): Service Run, cache clear, entity data export,
+  ElFinder commands, instance start/stop, and similar. A VIEW-only inheritable
+  ArtifactAuthz no longer runs those operations.
+- Groovy Shell WebSocket now also requires AUTHZA_ALL on the Tools app (in
+  addition to the `GROOVY_SHELL_WEB` permission).
+
+### WebSocket handshake credentials
+
+- `UserFacadeImpl.initFromHandshakeRequest` no longer logs anyone in from the
+  upgrade **query string** (`api_key`, `login_key`, `authUsername` /
+  `authPassword`). That matched neither HTTP request init (body/header only, not
+  the query string) nor `SECURITY_SURFACE.md`.
+- The handshake still uses the existing HTTP session, then HTTP Basic and
+  `api_key` / `login_key` **headers**. Callers that put a key on
+  `/groovysh?api_key=` (or `/notws`) must send a header or rely on the session
+  cookie from a prior login.
+
+### Security proof tests
+
+- Added a catalog in `SECURITY_TESTS.md` mapped to OWASP Top 10:2025 and
+  `SECURITY_SURFACE.md`.
+- In-process Spock proofs under `framework/src/test/groovy/Security*.groovy`
+  (run with `./gradlew :framework:test`).
+- HTTP proofs against a running server in `framework/test/` (pytest + requests,
+  not Gradle). Start Moqui, then `pytest`.
+
 ## Release 4.0.0 - 27 Feb 2026
 
 Moqui framework v4.0.0 is a major new release with massive changes some of which
@@ -1161,4 +1199,3 @@ Gradle tasks.
   screen; see BonitaSoft.com Open Source BPM for similar concept; generally
   workflow without requiring implementation of an entire app once the
   workflow itself is defined
-

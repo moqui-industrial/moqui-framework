@@ -24,8 +24,10 @@ import java.io.InputStream;
 import java.io.ObjectOutputStream;
 import java.io.UnsupportedEncodingException;
 import java.math.BigDecimal;
+import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.util.Locale;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -306,13 +308,42 @@ public class WebUtilities {
         return anyMatches;
     }
 
+    /**
+     * True if url is a same-origin path or absolute URL safe to use as a post-login redirect.
+     * Relative paths must start with a single slash (not //). Absolute http(s) URLs must match the request host.
+     */
+    public static boolean isSameOriginRedirect(String url, HttpServletRequest request) {
+        if (url == null || request == null) return false;
+        String p = url.trim();
+        if (p.isEmpty()) return false;
+        String lower = p.toLowerCase(Locale.ROOT);
+        if (p.indexOf('\\') >= 0) return false;
+        if (lower.startsWith("javascript:") || lower.startsWith("data:") || lower.startsWith("vbscript:")) return false;
+        if (p.startsWith("//")) return false;
+        if (p.startsWith("/")) return true;
+        if (!lower.startsWith("http://") && !lower.startsWith("https://")) return false;
+        try {
+            URI uri = URI.create(p);
+            if (uri.getUserInfo() != null) return false;
+            String host = uri.getHost();
+            if (host == null || host.isEmpty()) return false;
+            String serverName = request.getServerName();
+            return serverName != null && host.equalsIgnoreCase(serverName);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     public static byte[] windowsPex = {(byte) 0x4d, (byte) 0x5a};
     public static byte[] linuxElf = {(byte) 0x7f, (byte) 0x45, (byte) 0x4c, (byte) 0x46};
     public static byte[] javaClass = {(byte) 0xca, (byte) 0xfe, (byte) 0xba, (byte) 0xbe};
     public static byte[] macOs = {(byte) 0xfe, (byte) 0xed, (byte) 0xfa, (byte) 0xce};
-    public static byte[][] allOsExecutables = {windowsPex, linuxElf, javaClass, macOs};
+    public static byte[] macOs64 = {(byte) 0xfe, (byte) 0xed, (byte) 0xfa, (byte) 0xcf};
+    public static byte[] macOsReverse = {(byte) 0xce, (byte) 0xfa, (byte) 0xed, (byte) 0xfe};
+    public static byte[] macOs64Reverse = {(byte) 0xcf, (byte) 0xfa, (byte) 0xed, (byte) 0xfe};
+    public static byte[][] allOsExecutables = {windowsPex, linuxElf, javaClass, macOs, macOs64, macOsReverse, macOs64Reverse};
 
-    /** Looks for byte patterns for Windows Portable Executable (4d5a), Linux ELF (7f454c46), Java class (cafebabe), macOS (feedface) */
+    /** Looks for byte patterns for Windows PE (4d5a), Linux ELF (7f454c46), Java class (cafebabe), macOS Mach-O (feedface/feedfacf and byte-swapped) */
     public static boolean isExecutable(FileItem item) throws IOException {
         InputStream is = item.getInputStream();
         byte[] bytes = new byte[4];
@@ -320,7 +351,7 @@ public class WebUtilities {
         is.close();
         return isExecutable(bytes);
     }
-    /** Looks for byte patterns for Windows Portable Executable (4d5a), Linux ELF (7f454c46), Java class (cafebabe), macOS (feedface) */
+    /** Looks for byte patterns for Windows PE (4d5a), Linux ELF (7f454c46), Java class (cafebabe), macOS Mach-O (feedface/feedfacf and byte-swapped) */
     public static boolean isExecutable(byte[] bytes) {
         boolean foundPattern = false;
         for (int i = 0; i < allOsExecutables.length; i++) {
