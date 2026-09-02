@@ -100,6 +100,11 @@ public class ArtifactExecutionInfoImpl implements ArtifactExecutionInfo {
         String desc = artifactActionDescriptionMap.get(internalActionEnum);
         return desc != null ? desc : internalActionEnum.name();
     }
+    @Override
+    public Map<String, Object> getParameters() {
+        return parameters != null ? Collections.unmodifiableMap(new LinkedHashMap<>(parameters))
+                : Collections.emptyMap();
+    }
 
     @Override
     public String getAuthorizedUserId() { return internalAuthorizedUserId; }
@@ -191,6 +196,7 @@ public class ArtifactExecutionInfoImpl implements ArtifactExecutionInfo {
     }
     @Override
     public List<ArtifactExecutionInfo> getChildList() {
+        if (childList == null) return new ArrayList<>();
         List<ArtifactExecutionInfo> newChildList = new ArrayList<>();
         newChildList.addAll(childList);
         return newChildList;

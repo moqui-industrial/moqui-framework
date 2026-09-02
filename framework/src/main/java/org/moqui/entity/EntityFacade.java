@@ -186,4 +186,15 @@ public interface EntityFacade {
     void stopTxCache();
     /** True if {@link #startTxCacheDb} is in effect on this thread. */
     boolean isTxCacheActive();
+    /**
+     * Return an immutable diagnostic snapshot of changes currently held by an
+     * H2 transaction-cache overlay. The result contains createList,
+     * updateList, and deleteList entries. Each entry contains entityName,
+     * primaryKey, and the current overlay value where applicable.
+     *
+     * This is intended for simulation, diagnostics, and plan discovery. It
+     * does not flush or otherwise mutate the active overlay. Returns an empty
+     * map when no H2 overlay is active.
+     */
+    Map<String, Object> getTxCacheChangeSet();
 }

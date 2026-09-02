@@ -57,6 +57,8 @@ public interface ArtifactExecutionInfo {
     String getTypeDescription();
     AuthzAction getActionEnum();
     String getActionDescription();
+    /** Immutable snapshot of parameters recorded at the artifact boundary. */
+    Map<String, Object> getParameters();
 
     String getAuthorizedUserId();
     AuthzType getAuthorizedAuthzType();

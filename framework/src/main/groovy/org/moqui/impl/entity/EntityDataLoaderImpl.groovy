@@ -285,7 +285,7 @@ class EntityDataLoaderImpl implements EntityDataLoader {
             if (this.xmlText) {
                 tf.runUseOrBegin(transactionTimeout, "Error loading XML entity data", {
                     XMLReader reader = SAXParserFactory.newInstance().newSAXParser().XMLReader
-                    exh.setLocation("xmlText")
+                    exh.resetForFile("xmlText")
                     reader.setContentHandler(exh)
                     reader.parse(new InputSource(new StringReader(this.xmlText)))
                 })
@@ -347,7 +347,7 @@ class EntityDataLoaderImpl implements EntityDataLoader {
 
                 if (location.endsWith(".xml")) {
                     long beforeRecords = exh.valuesRead ?: 0
-                    exh.setLocation(location)
+                    exh.resetForFile(location)
 
                     SAXParser parser = SAXParserFactory.newInstance().newSAXParser()
                     parser.parse(inputStream, exh)
@@ -375,7 +375,7 @@ class EntityDataLoaderImpl implements EntityDataLoader {
                             long entryBeforeTime = System.currentTimeMillis()
                             if (entryFile.endsWith(".xml")) {
                                 long beforeRecords = exh.valuesRead ?: 0
-                                exh.setLocation(location)
+                                exh.resetForFile(location)
 
                                 SAXParser parser = SAXParserFactory.newInstance().newSAXParser()
                                 parser.parse(zis, exh)
@@ -652,6 +652,26 @@ class EntityDataLoaderImpl implements EntityDataLoader {
         EntityXmlHandler(EntityDataLoaderImpl edli, ValueHandler valueHandler) {
             this.edli = edli
             this.valueHandler = valueHandler
+        }
+
+        /** Reset all per-file parse state before parsing a new file with this shared handler instance.
+         * Without this, a file whose parse is aborted partway through (any error mid-document, so its
+         * closing entity-facade-xml/seed-data tag is never reached and endElement() never runs) leaves
+         * loadElements (and other per-file state) stuck from that failed file, silently corrupting the
+         * parse of the next file in the load sequence - most visibly when the next file is an entity
+         * definition file (root element "entities", never itself toggling loadElements), which then gets
+         * misread as a data record instead of having its embedded seed-data extracted. */
+        void resetForFile(String location) {
+            this.location = location
+            loadElements = false
+            currentEntityDef = (EntityDefinition) null
+            entityOperation = (String) null
+            currentServiceDef = (ServiceDefinition) null
+            rootValueMap = (Map) null
+            valueMapStack = (List<Map>) null
+            relatedEdStack = (List<EntityDefinition>) null
+            currentFieldName = (String) null
+            currentFieldValue = (StringBuilder) null
         }
 
         ValueHandler getValueHandler() { return valueHandler }

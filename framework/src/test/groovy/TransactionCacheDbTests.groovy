@@ -134,6 +134,28 @@ class TransactionCacheDbTests extends Specification {
         world == null
     }
 
+    def "HOLD exposes an immutable diagnostic change set"() {
+        when:
+        ec.entity.startTxCacheDb(true)
+        ec.entity.makeValue("moqui.test.TestEntity")
+                .setAll([testId:"TCDIAG1", testMedium:"observed"]).create()
+        Map changes = ec.entity.txCacheChangeSet
+
+        then:
+        changes.createList.size() == 1
+        changes.createList[0].entityName == 'moqui.test.TestEntity'
+        changes.createList[0].primaryKey.testId == 'TCDIAG1'
+        changes.createList[0].value.testMedium == 'observed'
+        changes.updateList == []
+        changes.deleteList == []
+
+        when:
+        changes.createList.add([:])
+
+        then:
+        thrown(UnsupportedOperationException)
+    }
+
     def "HOLD does not bump SequenceValueItem"() {
         when:
         Long before = ec.entity.find("moqui.entity.SequenceValueItem")
