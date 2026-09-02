@@ -32,6 +32,7 @@ import org.moqui.llm.LlmTool;
 import org.moqui.llm.LlmToolCall;
 import org.moqui.llm.LlmToolResult;
 import org.moqui.llm.LlmUsage;
+import org.moqui.util.ContextStack;
 
 import jakarta.servlet.http.HttpServletRequest;
 
@@ -49,6 +50,8 @@ import java.util.function.Supplier;
  */
 public final class LlmGateway {
     private static final Logger logger = LoggerFactory.getLogger(LlmGateway.class);
+    public static final String PROMPT_SIM = "component://tools/prompt/SimSystem.ftl";
+    public static final String PROMPT_SKILL_INJECT = "component://tools/prompt/SkillInject.ftl";
     private LlmGateway() { }
 
     public static final class Route {
@@ -301,7 +304,7 @@ public final class LlmGateway {
     static void applySystem(LlmClientImpl impl, Map<String, Object> body) {
         LlmFacadeImpl.ProfileState profile = impl != null ? impl.profile : null;
         if (profile != null && profile.systemLocation != null && !profile.systemLocation.isBlank()) {
-            String text = loadSystemText(impl.ec, profile.systemLocation);
+            String text = renderPrompt(impl.ec, profile.systemLocation, null);
             if (text != null && !text.isBlank()) impl.system(text);
             return;
         }
@@ -315,21 +318,34 @@ public final class LlmGateway {
         if (impl == null || userText == null || userText.isBlank()) return;
         try {
             List<SkillIndex.SkillDoc> docs = SkillIndex.retrieve(impl.ec, userText, 3);
-            impl.injectContext("skills", SkillIndex.formatInject(docs));
+            impl.injectContext("skills", SkillIndex.formatInject(impl.ec, docs));
         } catch (Throwable t) {
             logger.warn("Skill inject failed: {}", t.getMessage());
         }
     }
 
-    static String loadSystemText(ExecutionContext ec, String location) {
-        if (location == null || location.isBlank()) return null;
+    /**
+     * Render an LLM prompt template via ResourceFacade (FTL compile cache).
+     * extraContext is pushed for the render only.
+     */
+    static String renderPrompt(ExecutionContext ec, String location, Map<String, Object> extraContext) {
+        if (location == null || location.isBlank() || ec == null || ec.getResource() == null) return null;
+        ContextStack cs = ec.getContext();
+        boolean pushed = false;
         try {
-            if (ec != null && ec.getResource() != null)
-                return ec.getResource().getLocationText(location, true);
+            if (cs != null) {
+                cs.push();
+                pushed = true;
+                if (extraContext != null && !extraContext.isEmpty()) cs.putAll(extraContext);
+            }
+            String text = ec.getResource().template(location, "");
+            return text != null ? text.trim() : null;
         } catch (Throwable t) {
-            logger.warn("Could not load LLM system-location {}: {}", location, t.getMessage());
+            logger.warn("Could not render LLM prompt {}: {}", location, t.getMessage());
+            return null;
+        } finally {
+            if (pushed) cs.pop();
         }
-        return null;
     }
 
     /**
@@ -545,6 +561,16 @@ public final class LlmGateway {
         Map<String, Object> args = LlmJson.tryToMap(call.arguments);
         m.put("arguments", args != null ? args : call.arguments);
         m.put("execution", executionName(call.execution));
+        m.put("summary", LlmTrace.summarizeCall(call.name, args != null ? args : call.arguments));
+        return m;
+    }
+    public static Map<String, Object> toolResultToMap(LlmToolCall call, Object result, LlmTool.Execution execution) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id", call != null ? call.id : null);
+        m.put("name", call != null ? call.name : null);
+        m.put("execution", executionName(execution != null ? execution : (call != null ? call.execution : null)));
+        m.put("content", result);
+        m.put("summary", LlmTrace.summarizeResult(call != null ? call.name : null, result));
         return m;
     }
     public static Map<String, Object> errorData(Throwable t) {
@@ -565,6 +591,7 @@ public final class LlmGateway {
         m.put("finishReason", r != null && r.finishReason != null ? r.finishReason.name().toLowerCase() : "stop");
         m.put("usage", r != null ? usageToMap(r.usage) : null);
         m.put("yielded", r != null && r.yielded);
+        m.put("durationMs", r != null ? r.durationMs : 0L);
         return m;
     }
     public static Map<String, Object> yieldData(List<LlmToolCall> pending) {

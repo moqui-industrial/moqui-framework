@@ -247,6 +247,16 @@ class LlmClientTests extends Specification {
         r.toolCalls[0].name == "request"
     }
 
+    def "message reasoning_content is copied onto ProtocolResult"() {
+        when:
+        def r = LlmRetryClassifier.classify(200,
+                '{"choices":[{"finish_reason":"stop","message":{"content":"hi","reasoning_content":"I should greet."}}]}')
+        then:
+        r.finishReason == LlmFinishReason.STOP
+        r.content == "hi"
+        r.reasoning == "I should greet."
+    }
+
     def "finish_reason stop with content is STOP"() {
         when:
         def r = LlmRetryClassifier.classify(200,
@@ -985,6 +995,25 @@ class LlmClientTests extends Specification {
         enriched.fields[1].widgetType == "date"
         enriched.schemaVersion == 3
         enriched.kind == "form"
+    }
+
+    def "write_ui enricher drops map and list defaultValue"() {
+        given:
+        WriteUiTool tool = new WriteUiTool()
+        when:
+        def enriched = tool.enrichForClient([
+                fields: [
+                        [name: "productId", widget: "text-line", defaultValue: [:]],
+                        [name: "limit", widget: "text-line", defaultValue: ["x"]],
+                        [name: "ok", widget: "text-line", defaultValue: "10297"],
+                        [name: "n", widget: "text-line", defaultValue: 10]
+                ]
+        ], null)
+        then:
+        !enriched.fields[0].containsKey("defaultValue")
+        !enriched.fields[1].containsKey("defaultValue")
+        enriched.fields[2].defaultValue == "10297"
+        enriched.fields[3].defaultValue == 10
     }
 
     def "write_ui writeThrough merges fields and honors removeFields"() {
