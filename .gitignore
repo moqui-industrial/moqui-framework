@@ -11,6 +11,7 @@ build
 
 # build generated files
 /moqui*.war
+/moqui-run.log
 /Save*.zip
 
 # runtime directory (separate repository so ignore directory entirely)
@@ -103,4 +104,3 @@ Desktop.ini
 
 # Linux auto files
 *~
-
