@@ -76,6 +76,10 @@ public class LlmClientImpl implements LlmClient {
     private volatile RestClient.RestStream activeStream;
     /** Set when enter_sim persists a proposed skill; cleared after a world-pass admit. */
     String pendingProposedSkillName = null;
+    /** Assist Force Skill Use: refuse tools other than find_skill/enter_sim until a skill is selected. */
+    boolean forceSkillUse = false;
+    /** Conversation-scoped skill activated via find_skill select. */
+    String activeSkillName = null;
 
     public LlmClientImpl(ExecutionContext ec, LlmFacadeImpl.ProfileState profile) {
         this(ec, profile, null);
@@ -179,6 +183,14 @@ public class LlmClientImpl implements LlmClient {
         }
         return this;
     }
+    /** Assist Force Skill Use gate. Default false. */
+    public LlmClient forceSkillUse(boolean on) {
+        this.forceSkillUse = on;
+        return this;
+    }
+    public boolean isForceSkillUse() { return forceSkillUse; }
+    public String getActiveSkillName() { return activeSkillName; }
+
     @Override
     public LlmClient maxIterations(int n) {
         if (n < 1) throw new LlmException("maxIterations must be >= 1");
@@ -718,8 +730,10 @@ public class LlmClientImpl implements LlmClient {
     LlmClientImpl nestForSim(int maxIter) {
         LlmClientImpl nested = new LlmClientImpl(ec, profile, transactionInPlace);
         nested.maxIterations(maxIter > 0 ? maxIter : 32);
+        nested.allowedPaths.addAll(allowedPaths);
         nested.tool(LlmTool.browse());
         nested.tool(LlmTool.runService());
+        nested.tool(LlmTool.request());
         return nested;
     }
 
@@ -737,13 +751,28 @@ public class LlmClientImpl implements LlmClient {
         if (json == null || json.length() <= toolResultMaxChars) return result;
         Map<String, Object> truncated = new LinkedHashMap<>();
         truncated.put("truncated", true);
-        truncated.put("preview", json.substring(0, toolResultMaxChars));
         truncated.put("size", json.length());
         if (result instanceof Map) {
-            Object status = ((Map<?, ?>) result).get("status");
-            if (status != null) truncated.put("status", status);
+            Map<?, ?> m = (Map<?, ?>) result;
+            copyTruncationKey(truncated, m, "error");
+            copyTruncationKey(truncated, m, "instruction");
+            copyTruncationKey(truncated, m, "hint");
+            copyTruncationKey(truncated, m, "select");
+            copyTruncationKey(truncated, m, "proposedSkillName");
+            copyTruncationKey(truncated, m, "proposedSkillId");
+            copyTruncationKey(truncated, m, "proposedSkillStatus");
+            copyTruncationKey(truncated, m, "selected");
+            copyTruncationKey(truncated, m, "simActive");
+            copyTruncationKey(truncated, m, "sim");
+            copyTruncationKey(truncated, m, "status");
+            copyTruncationKey(truncated, m, "ok");
         }
+        truncated.put("preview", json.substring(0, toolResultMaxChars));
         return truncated;
+    }
+
+    private static void copyTruncationKey(Map<String, Object> dest, Map<?, ?> src, String key) {
+        if (src.containsKey(key) && src.get(key) != null) dest.put(key, src.get(key));
     }
 
     private void applyAllowLists(LlmTool tool) {

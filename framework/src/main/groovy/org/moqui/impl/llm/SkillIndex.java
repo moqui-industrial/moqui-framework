@@ -15,6 +15,7 @@ package org.moqui.impl.llm;
 
 import org.moqui.context.ArtifactExecutionFacade;
 import org.moqui.context.ExecutionContext;
+import org.moqui.entity.EntityCondition;
 import org.moqui.entity.EntityList;
 import org.moqui.entity.EntityValue;
 import org.moqui.impl.context.ExecutionContextFactoryImpl;
@@ -25,6 +26,7 @@ import org.slf4j.LoggerFactory;
 import java.util.function.Supplier;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -113,6 +115,31 @@ public class SkillIndex {
         return out;
     }
 
+    /**
+     * Exact name lookup for find_skill select. Prefers an active or proposed entity row (has skillId),
+     * else a shipped file. Superseded / rejected / deprecated rows are not selectable.
+     */
+    public static SkillDoc getByName(ExecutionContext ec, String name) {
+        if (name == null || name.isBlank()) return null;
+        String n = name.trim();
+        if (ec != null && ec.getEntity() != null) {
+            try {
+                EntityValue ev = withAuthzDisabled(ec, () -> ec.getEntity().find("moqui.llm.LlmSkill")
+                        .condition("name", n).useCache(false).one());
+                if (ev != null) {
+                    String st = ev.getString("statusId");
+                    if ("LsksActive".equals(st) || "LsksProposed".equals(st)) return fromEntity(ev);
+                }
+            } catch (Throwable t) {
+                logger.warn("LlmSkill getByName: {}", t.getMessage());
+            }
+        }
+        for (SkillDoc doc : scanShipped(ec)) {
+            if (n.equals(doc.name)) return doc;
+        }
+        return null;
+    }
+
     public static List<SkillDoc> retrieve(ExecutionContext ec, String query, int limit) {
         if (limit <= 0) limit = DEFAULT_LIMIT;
         String q = query == null ? "" : query.toLowerCase(Locale.ROOT);
@@ -124,7 +151,7 @@ public class SkillIndex {
         if (ec != null && ec.getEntity() != null) {
             try {
                 EntityList rows = withAuthzDisabled(ec, () -> ec.getEntity().find("moqui.llm.LlmSkill")
-                        .condition("statusId", "LsksActive")
+                        .condition("statusId", EntityCondition.IN, Arrays.asList("LsksActive", "LsksProposed"))
                         .useCache(false).list());
                 int n = rows == null ? 0 : rows.size();
                 for (int i = 0; i < n; i++) {
