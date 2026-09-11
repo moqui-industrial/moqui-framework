@@ -528,8 +528,8 @@ class ScreenRenderImpl implements ScreenRender {
 
             if ("none".equals(ri.type)) {
                 // for response type none also save parameters if configured to do so, and save errors if there are any
-                if (ri.saveParameters) wfi.saveRequestParametersToSession()
-                if (ec.message.hasError()) wfi.saveErrorParametersToSession()
+                if (ri.saveParameters && wfi != null) wfi.saveRequestParametersToSession()
+                if (ec.message.hasError() && wfi != null) wfi.saveErrorParametersToSession()
                 if (logger.isTraceEnabled()) logger.trace("Transition ${screenUrlInfo.getFullPathNameList().join("/")} in ${System.currentTimeMillis() - renderStartTime}ms, type none response")
                 return
             }
@@ -571,8 +571,8 @@ class ScreenRenderImpl implements ScreenRender {
 
                 // save messages in session before redirecting so they can be displayed on the next screen
                 wfi.saveMessagesToSession()
-                if (ri.saveParameters) wfi.saveRequestParametersToSession()
-                if (ec.message.hasError()) wfi.saveErrorParametersToSession()
+                if (ri.saveParameters && wfi != null) wfi.saveRequestParametersToSession()
+                if (ec.message.hasError() && wfi != null) wfi.saveErrorParametersToSession()
             }
 
             // either send a redirect for the response, if possible, or just render the response now

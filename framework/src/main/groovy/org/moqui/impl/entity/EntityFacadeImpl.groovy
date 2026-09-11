@@ -2087,6 +2087,14 @@ class EntityFacadeImpl implements EntityFacade {
         ExecutionContextImpl eci = ecfi.getEci()
         return eci != null && eci.entityTxCache != null
     }
+    @Override
+    Map<String, Object> getTxCacheChangeSet() {
+        EntityTxCache active = getActiveTxCache()
+        if (active instanceof TransactionCacheDb) {
+            return ((TransactionCacheDb) active).getChangeSet()
+        }
+        return Collections.emptyMap()
+    }
 
     @Override Connection getConnection(String groupName) { return getConnection(groupName, false) }
     @Override Connection getConnection(String groupName, boolean useClone) {

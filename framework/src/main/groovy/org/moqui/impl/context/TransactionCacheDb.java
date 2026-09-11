@@ -37,6 +37,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -225,6 +226,7 @@ public class TransactionCacheDb implements EntityTxCache {
             copyViewMembers(evb, ed);
             return;
         }
+        if (!isFullyPopulated(evb, ed)) return;
         Map<String, Object> key = makeKey(evb);
         if (key != null && (tombstoneKeys.contains(key) || dirtyCreateKeys.contains(key) || dirtyUpdateKeys.contains(key)))
             return;
@@ -242,12 +244,35 @@ public class TransactionCacheDb implements EntityTxCache {
             copyViewMembers(evb, ed);
             return;
         }
+        if (!isFullyPopulated(evb, ed)) return;
         Map<String, Object> key = makeKey(evb);
         if (key != null && (tombstoneKeys.contains(key) || dirtyCreateKeys.contains(key) || dirtyUpdateKeys.contains(key)))
             return;
         ensureTable(ed);
         if (existsInH2(evb, ed)) return;
         insertH2(evb, ed);
+    }
+
+    /**
+     * A value fetched through a partial-field entity-find (select-field
+     * restricting the returned columns) is missing every unselected field in
+     * its own value map - including, potentially, primary-key fields not
+     * needed by that particular query. insertH2() writes every column of the
+     * entity from the source value unconditionally, so copying such a value
+     * in as a "clean replica" silently binds NULL for any excluded NOT NULL
+     * column (observed with composite-key entities like OrderItem). Only a
+     * value with every field actually loaded is safe to cache in the overlay
+     * this way; a partial result is simply skipped and re-read from
+     * production next time it is needed.
+     */
+    private static boolean isFullyPopulated(EntityValueBase evb, EntityDefinition ed) {
+        FieldInfo[] all = ed.entityInfo.allFieldInfoArray;
+        for (int i = 0; i < all.length; i++) {
+            FieldInfo fi = all[i];
+            if (fi == null) break;
+            if (!evb.isFieldSet(fi.name)) return false;
+        }
+        return true;
     }
 
     public void ensureReady(EntityDefinition ed) {
@@ -290,6 +315,42 @@ public class TransactionCacheDb implements EntityTxCache {
     }
 
     @Override public boolean isKnownLocked(EntityValueBase evb) { return false; }
+
+    /**
+     * Read-only cumulative change snapshot used by simulation diagnostics.
+     * Values are detached maps so callers cannot mutate overlay state.
+     */
+    public synchronized Map<String, Object> getChangeSet() {
+        checkOpen();
+        ArrayList<Map<String, Object>> creates = new ArrayList<>();
+        ArrayList<Map<String, Object>> updates = new ArrayList<>();
+        ArrayList<Map<String, Object>> deletes = new ArrayList<>();
+        for (Map<String, Object> key : dirtyCreateKeys) {
+            creates.add(changeEntry(key, loadFromH2ByKey(key)));
+        }
+        for (Map<String, Object> key : dirtyUpdateKeys) {
+            updates.add(changeEntry(key, loadFromH2ByKey(key)));
+        }
+        for (Map<String, Object> key : tombstoneKeys) {
+            deletes.add(changeEntry(key, tombstoneValues.get(key)));
+        }
+        LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+        result.put("createList", Collections.unmodifiableList(creates));
+        result.put("updateList", Collections.unmodifiableList(updates));
+        result.put("deleteList", Collections.unmodifiableList(deletes));
+        return Collections.unmodifiableMap(result);
+    }
+
+    private static Map<String, Object> changeEntry(Map<String, Object> key, EntityValueBase value) {
+        LinkedHashMap<String, Object> primaryKey = new LinkedHashMap<>(key);
+        String entityName = (String) primaryKey.remove("_entityName");
+        LinkedHashMap<String, Object> entry = new LinkedHashMap<>();
+        entry.put("entityName", entityName);
+        entry.put("primaryKey", Collections.unmodifiableMap(primaryKey));
+        entry.put("value", value != null
+                ? Collections.unmodifiableMap(new LinkedHashMap<>(value.getMap())) : null);
+        return Collections.unmodifiableMap(entry);
+    }
 
     @Override
     public void flushCache(boolean clearRead) {

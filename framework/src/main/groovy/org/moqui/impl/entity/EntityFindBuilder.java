@@ -703,6 +703,10 @@ public class EntityFindBuilder extends EntityQueryBuilder {
     }
 
     public void makeOrderByClause(ArrayList<String> orderByFieldList, boolean hasLimitOffset) {
+        if (orderByFieldList == null) {
+            if (hasLimitOffset) sqlTopLevel.append(" ORDER BY 1");
+            return;
+        }
         int obflSize = orderByFieldList.size();
         if (obflSize == 0) {
             if (hasLimitOffset) sqlTopLevel.append(" ORDER BY 1");

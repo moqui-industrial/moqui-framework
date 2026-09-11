@@ -35,6 +35,12 @@ base {
 }
 
 sourceSets {
+    main {
+        groovy {
+            srcDirs = ['src/main/groovy']
+            include '**/*.groovy', '**/*.java'
+        }
+    }
     start
     execWar
 }
