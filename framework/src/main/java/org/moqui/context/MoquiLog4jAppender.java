@@ -22,10 +22,10 @@ import org.apache.logging.log4j.core.config.plugins.Plugin;
 import org.apache.logging.log4j.core.config.plugins.PluginAttribute;
 import org.apache.logging.log4j.core.config.plugins.PluginElement;
 import org.apache.logging.log4j.core.config.plugins.PluginFactory;
-import org.moqui.Moqui;
 
 @Plugin(name="MoquiLog4jAppender", category="Core", elementType="appender", printObject=true)
 public final class MoquiLog4jAppender extends AbstractAppender {
+    private static volatile ExecutionContextFactory executionContextFactory = null;
 
     // private final ReadWriteLock rwLock = new ReentrantReadWriteLock();
     // private final Lock readLock = rwLock.readLock();
@@ -37,7 +37,7 @@ public final class MoquiLog4jAppender extends AbstractAppender {
 
     @Override
     public void append(LogEvent event) {
-        ExecutionContextFactory ecf = Moqui.getExecutionContextFactory();
+        ExecutionContextFactory ecf = executionContextFactory;
         // ECF may not yet be initialized
         if (ecf == null) return;
         List<LogEventSubscriber> subscribers = ecf.getLogEventSubscribers();
@@ -58,6 +58,8 @@ public final class MoquiLog4jAppender extends AbstractAppender {
         }
         */
     }
+
+    public static void setExecutionContextFactory(ExecutionContextFactory ecf) { executionContextFactory = ecf; }
 
     @PluginFactory
     public static MoquiLog4jAppender createAppender(@PluginAttribute("name") String name,

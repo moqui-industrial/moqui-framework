@@ -228,7 +228,18 @@ public class LlmConversationImpl implements LlmConversation {
                 rest.add(m);
             }
         }
-        rest = trimRest(rest, policy, charsOf(system) + charsOfAll(context));
+        int reserved = charsOf(system) + charsOfAll(context);
+        rest = trimRest(rest, policy, reserved);
+        // Trimming takes from the front, where the task is. A window with no user turn has lost
+        // the request itself, and providers whose chat template requires one reject it outright
+        // (HTTP 400 "No user query found in messages"). Keep the most recent user turn.
+        if (!containsRole(rest, LlmMessage.Role.USER)) {
+            LlmMessage latestUser = latestOfRole(messages, LlmMessage.Role.USER);
+            // Prepended rather than re-trimmed: re-trimming to stay exactly within the budget
+            // would drop a whole assistant/tool pair to make room for one short message. The
+            // window may therefore exceed maxMessages by exactly one, and that one is the task.
+            if (latestUser != null) rest.add(0, latestUser);
+        }
         List<LlmMessage> window = new ArrayList<>();
         if (policy.keepSystemFirst && system != null) window.add(system);
         window.addAll(context);
@@ -816,6 +827,16 @@ public class LlmConversationImpl implements LlmConversation {
             return n;
         }
         return 1;
+    }
+
+    private static boolean containsRole(List<LlmMessage> msgs, LlmMessage.Role role) {
+        for (LlmMessage m : msgs) if (m != null && m.role == role) return true;
+        return false;
+    }
+    private static LlmMessage latestOfRole(List<LlmMessage> msgs, LlmMessage.Role role) {
+        LlmMessage found = null;
+        for (LlmMessage m : msgs) if (m != null && m.role == role) found = m;
+        return found;
     }
 
     private static int charsOf(LlmMessage m) {

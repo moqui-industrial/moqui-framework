@@ -16,6 +16,7 @@ package org.moqui;
 import org.moqui.context.ArtifactExecutionInfo;
 import org.moqui.context.ExecutionContext;
 import org.moqui.context.ExecutionContextFactory;
+import org.moqui.context.MoquiLog4jAppender;
 import org.moqui.entity.EntityDataLoader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,6 +47,7 @@ public class Moqui {
             // initialize the activeExecutionContextFactory from configuration using java.util.ServiceLoader
             // the implementation class name should be in: "META-INF/services/org.moqui.context.ExecutionContextFactory"
             activeExecutionContextFactory = executionContextFactoryLoader.iterator().next();
+            MoquiLog4jAppender.setExecutionContextFactory(activeExecutionContextFactory);
         }
     }
 
@@ -53,6 +55,7 @@ public class Moqui {
         if (activeExecutionContextFactory != null && !activeExecutionContextFactory.isDestroyed())
             throw new IllegalStateException("Active ExecutionContextFactory already in place, cannot set one dynamically.");
         activeExecutionContextFactory = executionContextFactory;
+        MoquiLog4jAppender.setExecutionContextFactory(activeExecutionContextFactory);
     }
     public static <K extends ExecutionContextFactory> K dynamicInit(Class<K> ecfClass, ServletContext sc)
             throws InstantiationException, IllegalAccessException, NoSuchMethodException, InvocationTargetException {
@@ -61,6 +64,7 @@ public class Moqui {
 
         K newEcf = ecfClass.getDeclaredConstructor().newInstance();
         activeExecutionContextFactory = newEcf;
+        MoquiLog4jAppender.setExecutionContextFactory(activeExecutionContextFactory);
         // check for an empty DB
         if (newEcf.checkEmptyDb()) {
             logger.warn("Data loaded into empty DB, re-initializing ExecutionContextFactory");
@@ -69,6 +73,7 @@ public class Moqui {
             // create new ECFI to get framework init data from DB
             newEcf = ecfClass.getDeclaredConstructor().newInstance();
             activeExecutionContextFactory = newEcf;
+            MoquiLog4jAppender.setExecutionContextFactory(activeExecutionContextFactory);
         }
 
         if (sc != null) {
@@ -92,6 +97,7 @@ public class Moqui {
                 activeExecutionContextFactory.destroy();
             }
             activeExecutionContextFactory = null;
+            MoquiLog4jAppender.setExecutionContextFactory(null);
             System.gc();
         }
 
@@ -108,7 +114,10 @@ public class Moqui {
     public static void destroyActiveExecutionContext() { activeExecutionContextFactory.destroyActiveExecutionContext(); }
 
     /** This should be called when the process is terminating to clean up framework and tool operations and resources. */
-    public static void destroyActiveExecutionContextFactory() { activeExecutionContextFactory.destroy(); }
+    public static void destroyActiveExecutionContextFactory() {
+        activeExecutionContextFactory.destroy();
+        MoquiLog4jAppender.setExecutionContextFactory(null);
+    }
 
     /** This method is meant to be run from a command-line interface and handle data loading in a generic way.
      * @param argMap Arguments, generally from command line, to configure this data load.
@@ -120,6 +129,7 @@ public class Moqui {
         // make sure we have a factory, even if moqui.init.static != true
         if (activeExecutionContextFactory == null)
             activeExecutionContextFactory = executionContextFactoryLoader.iterator().next();
+        MoquiLog4jAppender.setExecutionContextFactory(activeExecutionContextFactory);
 
         ExecutionContext ec = activeExecutionContextFactory.getExecutionContext();
         // disable authz and add an artifact set to anonymous authorized all
@@ -160,5 +170,6 @@ public class Moqui {
         // cleanup and quit
         activeExecutionContextFactory.destroyActiveExecutionContext();
         activeExecutionContextFactory.destroy();
+        MoquiLog4jAppender.setExecutionContextFactory(null);
     }
 }
