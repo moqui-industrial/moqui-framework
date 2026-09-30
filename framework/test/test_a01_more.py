@@ -45,6 +45,22 @@ def test_status_x_forwarded_for_does_not_grant_access_from_spoofed_loopback(http
     body = (r.text or "").lower()
     assert "datasources" not in body
     assert "vmvendor" not in body
+    # From loopback, utilization JSON should still be returned (forwarded-for is not the client IP).
+    if r.content:
+        assert r.status_code == 200
+        assert "utilization" in body or "heap" in body or r.text.strip().startswith("{")
+
+
+def test_status_forwarded_for_header_does_not_hide_loopback(http, base_url, require_server):
+    r = http.get(
+        base_url + "/status",
+        headers={"Forwarded": "for=8.8.8.8"},
+        timeout=10,
+    )
+    body = (r.text or "").lower()
+    assert "datasources" not in body
+    if r.content:
+        assert "utilization" in body or "heap" in body or r.text.strip().startswith("{")
 
 
 def test_login_form_action_is_login_path(http, base_url, require_server):
@@ -265,3 +281,242 @@ def test_menu_data_tools_without_login_is_not_the_menu(http, base_url, require_s
     body = (r.text or "").lower()
     assert r.status_code in (401, 403, 302) or "auto screens" not in body
     assert "groovyshell" not in body or r.status_code != 200
+
+
+def test_elastic_proxy_basic_auth_without_permission_is_403(http, base_url, require_server):
+    """MoquiAuthFilter takes credentials from the request, not just the session cookie."""
+    require_sec_user(base_url, "sec.none.only", "SecNone1!!")
+    r = http.get(
+        base_url + "/elastic/",
+        auth=("sec.none.only", "SecNone1!!"),
+        timeout=15,
+        allow_redirects=False,
+    )
+    assert r.status_code == 403
+
+
+def test_elastic_proxy_bad_basic_auth_is_401(http, base_url, require_server):
+    require_sec_user(base_url, "sec.none.only", "SecNone1!!")
+    r = http.get(
+        base_url + "/elastic/",
+        auth=("sec.none.only", "definitely-wrong-password"),
+        timeout=15,
+        allow_redirects=False,
+    )
+    assert r.status_code == 401
+
+
+def test_elastic_proxy_api_key_header_garbage_is_401(http, base_url, require_server):
+    r = http.get(
+        base_url + "/elastic/",
+        headers={"api_key": "not-a-real-key"},
+        timeout=15,
+        allow_redirects=False,
+    )
+    assert r.status_code in (401, 403)
+
+
+def test_elastic_proxy_basic_auth_with_permission_reaches_the_cluster(http, base_url, require_server,
+                                                                     username, password):
+    """Designed exposure: ElasticRemote is the full cluster HTTP API. Pins that the gate is the
+    permission and nothing else, so a change to the filter or the seed permission is noticed."""
+    r = http.get(
+        base_url + "/elastic/",
+        auth=(username, password),
+        timeout=15,
+        allow_redirects=False,
+    )
+    if r.status_code == 403:
+        pytest.skip(f"{username} does not have ElasticRemote; cannot prove the positive case")
+    if r.status_code != 200:
+        pytest.skip(f"Elastic/OpenSearch not reachable (status {r.status_code})")
+    assert "cluster_name" in (r.text or "") or "version" in (r.text or "")
+
+
+def test_fop_filename_quote_stays_in_one_content_disposition(http, base_url, require_server, username, password):
+    require_screen_login(http, base_url, username, password)
+    r = http.get(
+        base_url + "/fop/apps/tools/dashboard",
+        params={"filename": 'a"; x=y'},
+        timeout=20,
+        allow_redirects=False,
+    )
+    if r.status_code in (401, 403):
+        pytest.skip("user cannot render /fop/apps/tools/dashboard")
+    cd = r.headers.get("Content-Disposition") or ""
+    assert '"; x=' not in cd
+    assert "\r" not in cd and "\n" not in cd
+
+
+def test_datasnapshot_view_cannot_download(http, base_url, require_server):
+    require_sec_user(base_url, "sec.view.only", "SecView1!!")
+    require_screen_login(http, base_url, "sec.view.only", "SecView1!!")
+    r = http.get(
+        base_url + "/apps/tools/Entity/DataSnapshot/downloadSnapshot",
+        params={"filename": "anything.zip"},
+        timeout=15,
+        allow_redirects=False,
+    )
+    assert r.status_code in (401, 403)
+
+
+def test_datasnapshot_parent_segment_filename_is_not_found(http, base_url, require_server, username, password):
+    require_screen_login(http, base_url, username, password)
+    r = http.get(
+        base_url + "/apps/tools/Entity/DataSnapshot/downloadSnapshot",
+        params={"filename": "../../conf/MoquiProductionConf.xml"},
+        timeout=15,
+        allow_redirects=False,
+    )
+    if r.status_code in (401, 403):
+        pytest.skip("user cannot open DataSnapshot")
+    assert r.status_code in (400, 404)
+    body = (r.text or "").lower()
+    assert "moqui-conf" not in body
+    assert "crypt-pass" not in body
+
+
+def test_datasnapshot_parent_segment_delete_is_rejected(http, base_url, require_server, username, password):
+    login_r = require_screen_login(http, base_url, username, password)
+    tok = csrf_token(login_r)
+    if not tok:
+        pytest.skip("no CSRF token after login")
+    r = http.post(
+        base_url + "/apps/tools/Entity/DataSnapshot/deleteSnapshot",
+        data={"filename": "../../conf/MoquiProductionConf.xml", "moquiSessionToken": tok},
+        headers={"X-CSRF-Token": tok},
+        timeout=15,
+        allow_redirects=False,
+    )
+    if r.status_code in (401, 403):
+        pytest.skip("user cannot open DataSnapshot")
+    body = (r.text or "").lower()
+    assert "crypt-pass" not in body
+    assert "moqui-conf" not in body
+    assert r.status_code != 500
+
+
+def test_datasnapshot_parent_segment_import_is_rejected(http, base_url, require_server, username, password):
+    login_r = require_screen_login(http, base_url, username, password)
+    tok = csrf_token(login_r)
+    if not tok:
+        pytest.skip("no CSRF token after login")
+    r = http.post(
+        base_url + "/apps/tools/Entity/DataSnapshot/importSnapshot",
+        data={"zipFilename": "../../conf/MoquiProductionConf.xml", "moquiSessionToken": tok},
+        headers={"X-CSRF-Token": tok},
+        timeout=15,
+        allow_redirects=False,
+    )
+    if r.status_code in (401, 403):
+        pytest.skip("user cannot open DataSnapshot")
+    body = (r.text or "").lower()
+    assert "crypt-pass" not in body
+    assert "moqui-conf" not in body
+    assert r.status_code != 500
+
+
+def test_elfinder_component_webroot_put_does_not_write_screen(http, base_url, require_server, username, password):
+    from pathlib import Path
+    login_r = require_screen_login(http, base_url, username, password)
+    # X-CSRF-Token is only set when the session token is created (login makes a new session).
+    # Later GETs of ElFinder do not repeat the header.
+    tok = csrf_token(login_r)
+    elf = http.get(base_url + "/apps/system/Resource/ElFinder", timeout=10)
+    if elf.status_code in (401, 403):
+        pytest.skip("user cannot open ElFinder")
+    if not tok:
+        tok = csrf_token(elf)
+    if not tok:
+        pytest.skip("no CSRF token after login")
+    screen_dir = Path(__file__).resolve().parents[2] / "runtime" / "base-component" / "webroot" / "screen" / "webroot"
+    before = set(p.name for p in screen_dir.glob("*.xml")) if screen_dir.is_dir() else set()
+    data = {
+        "cmd": "put",
+        "resourceRoot": "component://webroot",
+        "target": "v0_cm9vdA",  # hash of "root" is not required to be valid; write must still be refused
+        "content": "<screen require-authentication=\"false\"></screen>",
+        "moquiSessionToken": tok,
+    }
+    r = http.post(
+        base_url + "/apps/system/Resource/ElFinder/command",
+        data=data,
+        headers={"X-CSRF-Token": tok},
+        timeout=15,
+        allow_redirects=False,
+    )
+    body = (r.text or "").lower()
+    if r.status_code in (401, 403) and "session token" in body:
+        pytest.fail("ElFinder command POST rejected for CSRF despite a session token from login")
+    if r.status_code in (401, 403):
+        pytest.skip("user cannot run ElFinder command")
+    after = set(p.name for p in screen_dir.glob("*.xml")) if screen_dir.is_dir() else set()
+    assert after == before
+    assert "write not allowed" in body or r.status_code != 200 or "error" in body
+
+
+def test_anonymous_tools_csv_is_not_a_data_dump(http, base_url, require_server):
+    r = http.get(base_url + "/apps/tools/dashboard.csv", timeout=10, allow_redirects=False)
+    ctype = (r.headers.get("Content-Type") or "").lower()
+    body = r.text or ""
+    assert r.status_code in (401, 403, 302, 303) or "login" in body.lower()
+    if r.status_code == 200:
+        assert "text/csv" not in ctype
+        assert "auto screen" not in body.lower()
+
+
+def test_view_only_tools_csv_is_not_a_privilege_escalation(http, base_url, require_server):
+    require_sec_user(base_url, "sec.view.only", "SecView1!!")
+    require_screen_login(http, base_url, "sec.view.only", "SecView1!!")
+    r = http.get(base_url + "/apps/tools/dashboard.csv", timeout=10, allow_redirects=False)
+    # VIEW-only may render CSV of what they can already view; it must not be an unauthenticated dump
+    # and must not run mutating tools. 403/empty/csv-of-dashboard are all fine.
+    assert r.status_code != 500
+    body = (r.text or "").lower()
+    assert "sql runner" not in body or r.status_code in (401, 403)
+
+
+def test_authorized_tools_csv_is_csv(http, base_url, require_server, username, password):
+    require_screen_login(http, base_url, username, password)
+    r = http.get(base_url + "/apps/tools/dashboard.csv", timeout=10, allow_redirects=False)
+    if r.status_code in (401, 403):
+        pytest.skip("user cannot open Tools dashboard")
+    ctype = (r.headers.get("Content-Type") or "").lower()
+    assert r.status_code == 200
+    assert "csv" in ctype or "," in (r.text or "") or "text/plain" in ctype
+
+
+def test_production_data_import_rejects_remote_location(http, base_url, require_server, username, password):
+    login_r = require_screen_login(http, base_url, username, password)
+    tok = csrf_token(login_r)
+    if not tok:
+        pytest.skip("no CSRF token after login")
+    r = http.post(
+        base_url + "/apps/tools/Entity/DataImport/load",
+        data={"location": "http://127.0.0.1:9/sec-ssrf", "moquiSessionToken": tok},
+        headers={"X-CSRF-Token": tok},
+        timeout=10,
+        allow_redirects=True,
+    )
+    body = (r.text or "").lower()
+    assert r.status_code != 500
+    assert "not allowed" in body or "production" in body or r.status_code in (401, 403)
+
+
+def test_multipart_executable_upload_is_rejected(http, base_url, require_server, username, password):
+    login_r = require_screen_login(http, base_url, username, password)
+    tok = csrf_token(login_r)
+    if not tok:
+        pytest.skip("no CSRF token after login")
+    files = {"snapshotFile": ("evil.exe", b"MZ\x00\x00" + b"X" * 32, "application/octet-stream")}
+    r = http.post(
+        base_url + "/apps/tools/Entity/DataSnapshot/uploadSnapshot",
+        data={"moquiSessionToken": tok},
+        files=files,
+        headers={"X-CSRF-Token": tok},
+        timeout=15,
+        allow_redirects=False,
+    )
+    body = (r.text or "").lower()
+    assert r.status_code == 415 or "executable" in body or "not allowed" in body
+    assert r.status_code != 200

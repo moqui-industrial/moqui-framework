@@ -5,6 +5,7 @@
 import org.moqui.context.ExecutionContext
 import org.moqui.entity.EntityValue
 import org.moqui.impl.context.ExecutionContextImpl
+import org.moqui.impl.screen.WebFacadeStub
 import org.moqui.screen.ScreenTest
 import org.moqui.util.MNode
 
@@ -25,15 +26,78 @@ class SecurityTestSupport {
     static final String NONE_PASSWORD = "SecNone1!!"
     static final String NONE_USER_ID = "SEC_NONE_ONLY"
     static final String NONE_GROUP_ID = "SEC_NONE_GROUP"
-    static final String SESSION_TOKEN = "TestSessionToken"
+    static final String HIST_USERNAME = "sec.hist.only"
+    static final String HIST_PASSWORD = "SecHist1!!"
+    static final String HIST_USER_ID = "SEC_HIST_ONLY"
+    static final String HIST_FAIL_USERNAME = "sec.hist.fail"
+    static final String HIST_FAIL_PASSWORD = "SecHistFail1!!"
+    static final String HIST_FAIL_USER_ID = "SEC_HIST_FAIL"
+    // Narrow vs catch-all AT_ENTITY authz, for /rest/e1 proofs (HTTP only: WebFacadeStub has no entity REST).
+    static final String ENT_VIEW_USERNAME = "sec.ent.view"
+    static final String ENT_VIEW_PASSWORD = "SecEntView1!!"
+    static final String ENT_VIEW_USER_ID = "SEC_ENT_VIEW"
+    static final String ENT_VIEW_GROUP_ID = "SEC_ENT_VIEW_GROUP"
+    static final String ENT_ALL_USERNAME = "sec.ent.all"
+    static final String ENT_ALL_PASSWORD = "SecEntAll1!!"
+    static final String ENT_ALL_USER_ID = "SEC_ENT_ALL"
+    static final String ENT_ALL_GROUP_ID = "SEC_ENT_ALL_GROUP"
+    // MOQUI_API (AT_REST_PATH) authz, for /rest/s1 proofs.
+    static final String API_VIEW_USERNAME = "sec.api.view"
+    static final String API_VIEW_PASSWORD = "SecApiView1!!"
+    static final String API_VIEW_USER_ID = "SEC_API_VIEW"
+    static final String API_VIEW_GROUP_ID = "SEC_API_VIEW_GROUP"
+    static final String API_ALL_USERNAME = "sec.api.all"
+    static final String API_ALL_PASSWORD = "SecApiAll1!!"
+    static final String API_ALL_USER_ID = "SEC_API_ALL"
+    static final String API_ALL_GROUP_ID = "SEC_API_ALL_GROUP"
+    // EntitySyncServices authz, to prove VIEW-only blocks put#EntitySyncData.
+    static final String ES_VIEW_USERNAME = "sec.es.view"
+    static final String ES_VIEW_PASSWORD = "SecEsView1!!"
+    static final String ES_VIEW_USER_ID = "SEC_ES_VIEW"
+    static final String ES_VIEW_GROUP_ID = "SEC_ES_VIEW_GROUP"
+    static final String ES_ALL_USERNAME = "sec.es.all"
+    static final String ES_ALL_PASSWORD = "SecEsAll1!!"
+    static final String ES_ALL_USER_ID = "SEC_ES_ALL"
+    static final String ES_ALL_GROUP_ID = "SEC_ES_ALL_GROUP"
+    static final String IP_V4_USERNAME = "sec.ip.v4"
+    static final String IP_V4_PASSWORD = "SecIpV41!!"
+    static final String IP_V4_USER_ID = "SEC_IP_V4"
+    static final String IP_V4_ALLOWED = "10.99.99.99"
+    static final String IP_LOOP_USERNAME = "sec.ip.loop"
+    static final String IP_LOOP_PASSWORD = "SecIpLoop1!!"
+    static final String IP_LOOP_USER_ID = "SEC_IP_LOOP"
+    // HTTP proofs hit localhost, which is often IPv6 ::1 rather than 127.0.0.1
+    static final String IP_LOOP_ALLOWED = "127.0.0.1,::1"
     static final String XSS_SCRIPT = "<script>alert(1)</script>"
     static final String SQLI_OR = "' OR '1'='1"
     static final String SMT_ID = "SEC_SMT_TEST"
     static final String SMR_HMAC = "SEC_SMR_HMAC"
     static final String SMR_HMAC_TS = "SEC_SMR_HMAC_TS"
+    static final String SMR_NONE = "SEC_SMR_NONE"
     static final String HMAC_SECRET = "sec-hmac-test-secret"
     static final String HMAC_HEADER = "X-Moqui-Signature"
     static final String EMAIL_PIXEL_ID = "SEC_EMAIL_PIXEL"
+    // Known plaintext login key for HTTP api_key proofs (hashed at rest). Same string as framework/test.
+    static final String KEY_USERNAME = "sec.key.http"
+    static final String KEY_PASSWORD = "SecKeyHttp1!!"
+    static final String KEY_USER_ID = "SEC_KEY_HTTP"
+    static final String KEY_PLAINTEXT = "sec-test-login-key-fixed-40-chars-value"
+    // Single-use MFA fixture (known plaintext code; hashed at rest with SaltySalt).
+    static final String MFA_USERNAME = "sec.mfa.totp"
+    static final String MFA_PASSWORD = "SecMfaTotp1!!"
+    static final String MFA_USER_ID = "SEC_MFA_TOTP"
+    static final String MFA_FACTOR_ID = "SEC_MFA_TOTP_FACTOR"
+    static final String MFA_CODE = "87654321"
+    // Tarpit fixtures: dedicated group so a lock does not starve john.doe / other sec.* users.
+    static final String TAP_USERNAME = "sec.tap.user"
+    static final String TAP_PASSWORD = "SecTapUser1!!"
+    static final String TAP_USER_ID = "SEC_TAP_USER"
+    static final String TAP_GROUP_ID = "SEC_TAP_GROUP"
+    static final String TAP_SVC_NAME = "org.moqui.impl.UserServices.set#Preference"
+    static final String TAP_TRANS_NAME = "component://webroot/screen/webroot/apps.xml/setPreference"
+    static final int TAP_MAX_HITS = 3
+    static final int TAP_DURATION_SEC = 60
+    static final int TAP_LOCK_SEC = 30
 
     static void logout(ExecutionContext ec) {
         if (ec.user.userId) ec.user.logoutUser()
@@ -62,12 +126,53 @@ class SecurityTestSupport {
             ensureAuthz(ec, "SEC_ALL_TOOLS", ALL_GROUP_ID, "TOOLS_APP", "AUTHZA_ALL")
             ensureAuthz(ec, "SEC_ALL_SYS", ALL_GROUP_ID, "SYSTEM_APP", "AUTHZA_ALL")
             ensureGroup(ec, NONE_GROUP_ID, "Security test no artifact authz")
+            // AT_ENTITY: narrow (one entity) vs catch-all (.*) — /rest/e1 is generic entity authz
+            ensureGroup(ec, ENT_VIEW_GROUP_ID, "Security test AT_ENTITY narrow VIEW")
+            ensureGroup(ec, ENT_ALL_GROUP_ID, "Security test AT_ENTITY catch-all ALL")
+            ensureArtifactGroup(ec, "SEC_ENT_NARROW", "Security test one entity")
+            ensureArtifactGroupMember(ec, "SEC_ENT_NARROW", "moqui.basic.Enumeration", "AT_ENTITY", false)
+            ensureArtifactGroup(ec, "SEC_ENT_CATCHALL", "Security test all entities")
+            ensureArtifactGroupMember(ec, "SEC_ENT_CATCHALL", ".*", "AT_ENTITY", true)
+            ensureAuthz(ec, "SEC_ENT_VIEW_AUTHZ", ENT_VIEW_GROUP_ID, "SEC_ENT_NARROW", "AUTHZA_VIEW")
+            ensureAuthz(ec, "SEC_ENT_ALL_AUTHZ", ENT_ALL_GROUP_ID, "SEC_ENT_CATCHALL", "AUTHZA_ALL")
+            // MOQUI_API is the seeded AT_REST_PATH group for /rest/s1/moqui/**
+            ensureGroup(ec, API_VIEW_GROUP_ID, "Security test MOQUI_API VIEW")
+            ensureGroup(ec, API_ALL_GROUP_ID, "Security test MOQUI_API ALL")
+            ensureAuthz(ec, "SEC_API_VIEW_AUTHZ", API_VIEW_GROUP_ID, "MOQUI_API", "AUTHZA_VIEW")
+            ensureAuthz(ec, "SEC_API_ALL_AUTHZ", API_ALL_GROUP_ID, "MOQUI_API", "AUTHZA_ALL")
+            // EntitySyncServices is the seeded group over put#/get#EntitySyncData
+            ensureGroup(ec, ES_VIEW_GROUP_ID, "Security test EntitySyncServices VIEW")
+            ensureGroup(ec, ES_ALL_GROUP_ID, "Security test EntitySyncServices ALL")
+            ensureAuthz(ec, "SEC_ES_VIEW_AUTHZ", ES_VIEW_GROUP_ID, "EntitySyncServices", "AUTHZA_VIEW")
+            ensureAuthz(ec, "SEC_ES_ALL_AUTHZ", ES_ALL_GROUP_ID, "EntitySyncServices", "AUTHZA_ALL")
             ensureUser(ec, VIEW_USER_ID, VIEW_USERNAME, VIEW_PASSWORD, VIEW_GROUP_ID)
             ensureUser(ec, ALL_USER_ID, ALL_USERNAME, ALL_PASSWORD, ALL_GROUP_ID)
             ensureUser(ec, LOCK_USER_ID, LOCK_USERNAME, LOCK_PASSWORD, VIEW_GROUP_ID)
             ensureUser(ec, NONE_USER_ID, NONE_USERNAME, NONE_PASSWORD, NONE_GROUP_ID)
+            // Only SecurityLoggingTests uses these. UserLoginHistory is de-duplicated to one row per user per
+            // 60 seconds, so history proofs need users no other spec logs in as.
+            ensureUser(ec, HIST_USER_ID, HIST_USERNAME, HIST_PASSWORD, NONE_GROUP_ID)
+            ensureUser(ec, HIST_FAIL_USER_ID, HIST_FAIL_USERNAME, HIST_FAIL_PASSWORD, NONE_GROUP_ID)
+            ensureUser(ec, ENT_VIEW_USER_ID, ENT_VIEW_USERNAME, ENT_VIEW_PASSWORD, ENT_VIEW_GROUP_ID)
+            ensureUser(ec, ENT_ALL_USER_ID, ENT_ALL_USERNAME, ENT_ALL_PASSWORD, ENT_ALL_GROUP_ID)
+            ensureUser(ec, API_VIEW_USER_ID, API_VIEW_USERNAME, API_VIEW_PASSWORD, API_VIEW_GROUP_ID)
+            ensureUser(ec, API_ALL_USER_ID, API_ALL_USERNAME, API_ALL_PASSWORD, API_ALL_GROUP_ID)
+            ensureUser(ec, ES_VIEW_USER_ID, ES_VIEW_USERNAME, ES_VIEW_PASSWORD, ES_VIEW_GROUP_ID)
+            ensureUser(ec, ES_ALL_USER_ID, ES_ALL_USERNAME, ES_ALL_PASSWORD, ES_ALL_GROUP_ID)
+            String ipV4Id = ensureUser(ec, IP_V4_USER_ID, IP_V4_USERNAME, IP_V4_PASSWORD, NONE_GROUP_ID)
+            String ipLoopId = ensureUser(ec, IP_LOOP_USER_ID, IP_LOOP_USERNAME, IP_LOOP_PASSWORD, NONE_GROUP_ID)
+            ensureIpAllowed(ec, ipV4Id, IP_V4_ALLOWED)
+            ensureIpAllowed(ec, ipLoopId, IP_LOOP_ALLOWED)
             ensureSystemMessageTestRemotes(ec)
             ensureEmailPixel(ec)
+            ensurePermission(ec, "REST_SCHEMA", "REST schema dumps")
+            ensureGroupPermission(ec, "ADMIN", "REST_SCHEMA")
+            ensureUser(ec, KEY_USER_ID, KEY_USERNAME, KEY_PASSWORD, ENT_VIEW_GROUP_ID)
+            ensureLoginKey(ec)
+            ensureUser(ec, MFA_USER_ID, MFA_USERNAME, MFA_PASSWORD, NONE_GROUP_ID)
+            ensureMfaFactor(ec)
+            ensureTarpitFixtures(ec)
+            ensureUser(ec, TAP_USER_ID, TAP_USERNAME, TAP_PASSWORD, TAP_GROUP_ID)
         }
     }
 
@@ -86,7 +191,12 @@ class SecurityTestSupport {
             ec.entity.makeValue("moqui.service.message.SystemMessageRemote").setAll([
                     systemMessageRemoteId: SMR_HMAC_TS, description: "Security test HMAC timestamp",
                     systemMessageTypeId: SMT_ID, messageAuthEnumId: "SmatHmacSha256Timestamp",
-                    authHeaderName: HMAC_HEADER, sharedSecret: HMAC_SECRET]).create()
+                     authHeaderName: HMAC_HEADER, sharedSecret: HMAC_SECRET]).create()
+        }
+        if (ec.entity.find("moqui.service.message.SystemMessageRemote").condition("systemMessageRemoteId", SMR_NONE).one() == null) {
+            ec.entity.makeValue("moqui.service.message.SystemMessageRemote").setAll([
+                    systemMessageRemoteId: SMR_NONE, description: "Security test no auth",
+                    systemMessageTypeId: SMT_ID, messageAuthEnumId: "SmatNone"]).create()
         }
     }
 
@@ -132,12 +242,56 @@ class SecurityTestSupport {
         return found
     }
 
+    /** Newest UserLoginHistory.fromDate for a user, or epoch. Used to prove a login wrote ITS OWN row:
+     * loginSaveHistory() skips the create if any row exists for the user in the last 60 seconds, so a test that
+     * only looks at the newest row can pass on a row written by an earlier test. */
+    static long loginHistoryWatermark(ExecutionContext ec, String userId) {
+        long watermark = 0L
+        withAuthzDisabled(ec) {
+            EntityValue newest = ec.entity.find("moqui.security.UserLoginHistory")
+                    .condition("userId", userId).orderBy("-fromDate").limit(1).one()
+            if (newest?.fromDate) watermark = ((java.sql.Timestamp) newest.fromDate).getTime()
+        }
+        return watermark
+    }
+
+    static EntityValue waitForLoginHistoryAfter(ExecutionContext ec, String userId, long afterMs, long timeoutMs = 4000) {
+        long start = System.currentTimeMillis()
+        EntityValue found = null
+        while (System.currentTimeMillis() - start < timeoutMs) {
+            withAuthzDisabled(ec) {
+                found = ec.entity.find("moqui.security.UserLoginHistory").condition("userId", userId)
+                        .condition("fromDate", org.moqui.entity.EntityCondition.ComparisonOperator.GREATER_THAN,
+                                new java.sql.Timestamp(afterMs))
+                        .orderBy("-fromDate").limit(1).one()
+            }
+            if (found != null) return found
+            Thread.sleep(50)
+        }
+        return found
+    }
+
     static String userIdForUsername(ExecutionContext ec, String username) {
         String id = null
         withAuthzDisabled(ec) {
             id = ec.entity.find("moqui.security.UserAccount").condition("username", username).one()?.userId
         }
         return id
+    }
+
+    static void ensurePermission(ExecutionContext ec, String permissionId, String description) {
+        if (ec.entity.find("moqui.security.UserPermission").condition("userPermissionId", permissionId).one() == null) {
+            ec.entity.makeValue("moqui.security.UserPermission")
+                    .setAll([userPermissionId: permissionId, description: description]).create()
+        }
+    }
+    static void ensureGroupPermission(ExecutionContext ec, String groupId, String permissionId) {
+        def existing = ec.entity.find("moqui.security.UserGroupPermission")
+                .condition("userGroupId", groupId).condition("userPermissionId", permissionId).one()
+        if (existing == null) {
+            ec.entity.makeValue("moqui.security.UserGroupPermission")
+                    .setAll([userGroupId: groupId, userPermissionId: permissionId, fromDate: ec.user.nowTimestamp]).create()
+        }
     }
 
     static void ensureGroup(ExecutionContext ec, String groupId, String description) {
@@ -154,6 +308,25 @@ class SecurityTestSupport {
             ec.entity.makeValue("moqui.security.ArtifactAuthz").setAll([
                     artifactAuthzId: authzId, userGroupId: groupId, artifactGroupId: artifactGroupId,
                     authzTypeEnumId: "AUTHZT_ALWAYS", authzActionEnumId: action]).create()
+        }
+    }
+
+    static void ensureArtifactGroup(ExecutionContext ec, String artifactGroupId, String description) {
+        if (ec.entity.find("moqui.security.ArtifactGroup").condition("artifactGroupId", artifactGroupId).one() == null) {
+            ec.entity.makeValue("moqui.security.ArtifactGroup")
+                    .setAll([artifactGroupId: artifactGroupId, description: description]).create()
+        }
+    }
+
+    static void ensureArtifactGroupMember(ExecutionContext ec, String artifactGroupId, String artifactName,
+                                          String artifactTypeEnumId, boolean nameIsPattern) {
+        def find = ec.entity.find("moqui.security.ArtifactGroupMember")
+                .condition("artifactGroupId", artifactGroupId).condition("artifactName", artifactName)
+                .condition("artifactTypeEnumId", artifactTypeEnumId)
+        if (find.one() == null) {
+            ec.entity.makeValue("moqui.security.ArtifactGroupMember").setAll([
+                    artifactGroupId: artifactGroupId, artifactName: artifactName,
+                    artifactTypeEnumId: artifactTypeEnumId, nameIsPattern: (nameIsPattern ? "Y" : "N")]).create()
         }
     }
 
@@ -175,6 +348,13 @@ class SecurityTestSupport {
         }
         if (username == LOCK_USERNAME) resetLockAccount(ec)
         return userId
+    }
+
+    static void ensureIpAllowed(ExecutionContext ec, String userId, String ipAllowed) {
+        if (!userId) return
+        ec.service.sync().name("update", "moqui.security.UserAccount")
+                .parameters([userId: userId, ipAllowed: ipAllowed])
+                .disableAuthz().requireNewTransaction(true).call()
     }
 
     /** UserAccount is in a DataFeed; updates must run in an active TX. Failed-login tests often leave none. */
@@ -237,9 +417,69 @@ class SecurityTestSupport {
                 all.contains("ScreenResourceNotFoundException")
     }
 
-    static Map csrfParams(Map extra = [:]) {
-        Map m = [moquiSessionToken: SESSION_TOKEN]
+    /** The session token a screen render will compare against. WebFacadeStub returns a fixed value, so ask it. */
+    static String sessionToken(ExecutionContext ec) {
+        return new WebFacadeStub(eci(ec).ecfi, [:], [:], "get").sessionToken
+    }
+
+    static Map csrfParams(ExecutionContext ec, Map extra = [:]) {
+        Map m = [moquiSessionToken: sessionToken(ec)]
         if (extra) m.putAll(extra)
         return m
+    }
+
+    static void ensureLoginKey(ExecutionContext ec) {
+        String userId = userIdForUsername(ec, KEY_USERNAME) ?: KEY_USER_ID
+        String hashed = eci(ec).ecfi.getSimpleHash(KEY_PLAINTEXT, "", eci(ec).ecfi.getLoginKeyHashType(), false)
+        def existing = ec.entity.find("moqui.security.UserLoginKey").condition("loginKey", hashed).one()
+        if (existing == null) {
+            java.sql.Timestamp from = ec.user.nowTimestamp
+            java.sql.Timestamp thru = new java.sql.Timestamp(from.time + 365L * 24L * 60L * 60L * 1000L)
+            ec.entity.makeValue("moqui.security.UserLoginKey")
+                    .setAll([loginKey: hashed, userId: userId, fromDate: from, thruDate: thru,
+                             description: "security test known login key"]).create()
+        }
+    }
+
+    static void ensureMfaFactor(ExecutionContext ec) {
+        String userId = userIdForUsername(ec, MFA_USERNAME) ?: MFA_USER_ID
+        String hashed = eci(ec).ecfi.getSimpleHash(MFA_CODE, "SaltySalt")
+        def existing = ec.entity.find("moqui.security.UserAuthcFactor").condition("factorId", MFA_FACTOR_ID).one()
+        if (existing == null) {
+            ec.entity.makeValue("moqui.security.UserAuthcFactor").setAll([
+                    factorId: MFA_FACTOR_ID, userId: userId, factorTypeEnumId: "UafSingleUse",
+                    factorOption: hashed, fromDate: ec.user.nowTimestamp,
+                    needsValidation: "N"]).create()
+        } else {
+            existing.userId = userId
+            existing.factorTypeEnumId = "UafSingleUse"
+            existing.factorOption = hashed
+            existing.thruDate = null
+            existing.needsValidation = "N"
+            existing.update()
+        }
+    }
+
+    static void ensureTarpitFixtures(ExecutionContext ec) {
+        ensureGroup(ec, TAP_GROUP_ID, "Security test tarpit")
+        ensureArtifactGroup(ec, "SEC_TAP_SVC", "Security test service tarpit")
+        ensureArtifactGroupMember(ec, "SEC_TAP_SVC", TAP_SVC_NAME, "AT_SERVICE", false)
+        ensureArtifactGroup(ec, "SEC_TAP_TRANS", "Security test transition tarpit")
+        ensureArtifactGroupMember(ec, "SEC_TAP_TRANS", TAP_TRANS_NAME, "AT_XML_SCREEN_TRANS", false)
+        ensureAuthz(ec, "SEC_TAP_SVC_AUTHZ", TAP_GROUP_ID, "SEC_TAP_SVC", "AUTHZA_ALL")
+        ensureAuthz(ec, "SEC_TAP_TRANS_AUTHZ", TAP_GROUP_ID, "SEC_TAP_TRANS", "AUTHZA_ALL")
+        ensureTarpit(ec, TAP_GROUP_ID, "SEC_TAP_SVC")
+        ensureTarpit(ec, TAP_GROUP_ID, "SEC_TAP_TRANS")
+    }
+
+    static void ensureTarpit(ExecutionContext ec, String userGroupId, String artifactGroupId) {
+        def existing = ec.entity.find("moqui.security.ArtifactTarpit")
+                .condition("userGroupId", userGroupId).condition("artifactGroupId", artifactGroupId).one()
+        if (existing == null) {
+            ec.entity.makeValue("moqui.security.ArtifactTarpit").setAll([
+                    userGroupId: userGroupId, artifactGroupId: artifactGroupId,
+                    maxHitsCount: TAP_MAX_HITS, maxHitsDuration: TAP_DURATION_SEC,
+                    tarpitDuration: TAP_LOCK_SEC]).create()
+        }
     }
 }

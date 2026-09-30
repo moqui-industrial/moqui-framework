@@ -1,6 +1,36 @@
 # Moqui Framework Release Notes
 
-## Release 4.1.0 - Not Yet Released
+## Release 4.0.1 - Not Yet Released
+
+Moqui Framework 4.0.1 is a patch follow-up to 4.0.0. It includes a more
+thorough AI-assisted security review with SECURITY_SURFACE.md documentation
+and two new test suites (Spock and external Python; see SECURITY_TESTS.md).
+
+Please update to this release or backport changes. If backporting, contact a
+Board Member for more information to ensure full coverage.
+
+To help with review of deployments, the SECURITY_SURFACE.md doc consolidates
+and clarifies security details that have been more scattered and less formal.
+
+### New Features
+
+- Library updates in `framework/build.gradle` (that file is the full list). Notable:
+  - Groovy 5.0.3 to 5.1.1
+  - Apache Shiro 2.0.6 to 2.2.1 (still 2.x, not 3). Fixes session
+    fixation (CVE-2026-43827) and missing Secure cookie flag (CVE-2026-43828).
+    Moqui already rotates the HTTP session in `loginUser` (`makeNewSession`);
+    Shiro 2.2's extra `changeSessionId()` on login is skipped so the
+    authenticated Subject stays on the session the client cookie names.
+  - jackson-databind 2.20.1 to 2.22.2, including CVE-2026-54514,
+    CVE-2026-54515, CVE-2026-77310, CVE-2026-19032, and CVE-2026-83557
+  - Jetty 12.1.5 to 12.1.12 (EE11 artifacts in lockstep), including gzip
+    inflater leak (CVE-2026-1605), HTTP/1.1 request smuggling (CVE-2026-2332),
+    and Digest auth encoding (CVE-2026-10050)
+  - jsoup 1.21.2 to 1.23.2, including custom-Safelist XSS (CVE-2026-71497)
+    and XML parser resource exhaustion (CVE-2026-75140)
+  - Log4j 2.25.2 to 2.26.1, Freemarker 2.3.35, SnakeYAML 2.7, Commons
+    Codec/IO/Logging/Validator/Collections4, commons-fileupload2 M5, and
+    JUnit 6.1.3
 
 ### XML Screen transition authorization
 
@@ -37,6 +67,75 @@
   (run with `./gradlew :framework:test`).
 - HTTP proofs against a running server in `framework/test/` (pytest + requests,
   not Gradle). Start Moqui, then `pytest`.
+
+### Other web and REST hardening
+
+- Entity Data Snapshot download takes a single path segment and requires update
+  authz (same as delete). Parent-segment names are not found.
+- `/fop` sanitizes `Content-Disposition` filenames and restricts `contentType`
+  to PDF/PostScript.
+- `hasLoggedOut` is applied from the session username on the next request.
+- `POST /rest/login` returns 401 when credentials are not valid (HTML Login is
+  unchanged).
+- Post-login redirects compare absolute URLs to the configured webapp host, not
+  the request `Host` header. With the default empty host, only relative paths
+  are accepted, and the `Location` header is path-only so the container does
+  not rewrite it from `Host`.
+- Service REST authorizes `X-HTTP-Method-Override` using the override method.
+- Generic entity REST update/create/store drops UserAccount password hash
+  fields (`currentPassword`, `resetPassword`, salt, hash type). GET of
+  UserAccount over Service REST and entity REST omits the same fields.
+- Screen JSON responses (`Accept: application/json`) omit password and
+  other credential fields from `currentParameters`.
+- REST schema dumps (`entity.json` / swagger / raml) require the `REST_SCHEMA`
+  permission (seeded on ADMIN). Swagger no longer sets `Access-Control-Allow-Origin: *`.
+- Timestamped system-message HMAC rejects a repeated signature inside the
+  window (atomic `putIfAbsent`).
+- WebSocket endpoint ExecutionContext handling: each upgrade starts with a
+  fresh context on the dispatch thread; handshake auth applies only to that
+  connection.
+- Client IP canonicalization for IPv6 (and IPv4 `:port`); `ipAllowed` uses the
+  same matching for both. Embedded Jetty still reads `X-Forwarded-Proto` but
+  does not take the client address from `X-Forwarded-For`.
+- ElFinder: `component://` and `file:` roots remain browsable; write commands
+  on those roots are refused when `instance_purpose` is production. Directory
+  delete and entry names are cleaned up.
+- Login keys stay hashed values from `getLoginKey()` for the current user.
+  Generic entity REST does not create or list `UserLoginKey`.
+- Auto Screen, Data Edit, Data Import, and `put#EntitySyncData` refuse
+  identity-admin and secret-config entities (UserGroupMember, ArtifactAuthz,
+  UserAuthcFactor, UserPasswordHistory, EmailServer, and similar). UserAccount
+  remains available through Data Edit. System/Security screens are unchanged.
+- DataSnapshot download, delete, import, and upload take a single path segment
+  under `db/snapshot/`.
+- Login redirects reject CR/LF in the path; `email_allowed_hosts` suffix match
+  is DNS-only (IPv4 fragments are exact).
+- A leftover `resetPassword` with no `resetPasswordSetDate` is treated as
+  expired (`password.@email-expire-hours`).
+- `PATCH /rest/s1/moqui/users` identity fields (`disabled`, `username`,
+  `emailAddress`, and similar) require the ADMIN group. `MOQUI_API` ALL can
+  still update display fields. EmailServer host/port/password writes through
+  Service REST also require ADMIN.
+- System/Security: membership in `user_privileged_groups` (default ADMIN,
+  ADMIN_ADV) and grants of `user_sealed_permissions` (tool-gate permissions
+  plus ADMIN_PASSWORD, ElasticRemote, KibanaRemote, REST_SCHEMA) require the
+  caller to already hold that group or permission. Both lists are conf
+  properties. Seed/install is unchanged.
+- `email_allowed_hosts` (empty by default) limits the hosts poll/send may
+  connect to. Recipient filtering remains `EmailServer.allowedToDomains`.
+- `send#SystemMessageRest` signs `SmatHmacSha256` and `SmatHmacSha256Timestamp`.
+  `/rest/sm` returns JSON `{systemMessageIdList:[...]}` so send can store
+  `remoteMessageId`. `SmatNone` is real no-auth ingest (`loginAnonymousIfNoUser`).
+- Data Import remote `location=` (http/https/ftp) is refused when
+  `instance_purpose` is production.
+- Artifact tarpit hit windows use milliseconds (`maxHitsDuration` seconds).
+- WebSocket handshake Origin must be empty, same-origin, or in CORS
+  `allow-origins`.
+- Upload executable check also treats `#!` as executable (ZIP/JAR still allowed).
+- `simplifyRequestParameters` (body-only) decodes query-string names before
+  comparing them to the parameter map.
+- HMAC replay cache is `type="distributed"` (effective when a distributed
+  factory is configured).
 
 ## Release 4.0.0 - 27 Feb 2026
 

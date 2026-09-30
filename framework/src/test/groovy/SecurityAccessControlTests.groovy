@@ -23,7 +23,10 @@ class SecurityAccessControlTests extends Specification {
         rest = SecurityTestSupport.restScreenTest(ec)
     }
     def cleanupSpec() { SecurityTestSupport.logout(ec); ec.destroy() }
-    def setup() { SecurityTestSupport.logout(ec) }
+    def setup() {
+        SecurityTestSupport.logout(ec)
+        ec.message.clearAll()
+    }
 
     def "unauthenticated request does not render Tools dashboard"() {
         when:
@@ -38,7 +41,7 @@ class SecurityAccessControlTests extends Specification {
         when:
         SecurityTestSupport.login(ec, SecurityTestSupport.VIEW_USERNAME, SecurityTestSupport.VIEW_PASSWORD)
         ScreenTestRender str = tools.render("Service/ServiceRun/run",
-                SecurityTestSupport.csrfParams([serviceName: "org.moqui.impl.BasicServices.get#GeoRegionsForDropDown"]),
+                SecurityTestSupport.csrfParams(ec, [serviceName: "org.moqui.impl.BasicServices.get#GeoRegionsForDropDown"]),
                 "post")
         then:
         SecurityTestSupport.looksLikeAuthzFailure(str)
@@ -58,7 +61,7 @@ class SecurityAccessControlTests extends Specification {
         when:
         SecurityTestSupport.login(ec, SecurityTestSupport.VIEW_USERNAME, SecurityTestSupport.VIEW_PASSWORD)
         ScreenTestRender str = system.render("Cache/CacheList/clearAllCaches",
-                SecurityTestSupport.csrfParams(), "post")
+                SecurityTestSupport.csrfParams(ec), "post")
         then:
         SecurityTestSupport.looksLikeAuthzFailure(str)
     }
@@ -67,7 +70,7 @@ class SecurityAccessControlTests extends Specification {
         when:
         SecurityTestSupport.login(ec, SecurityTestSupport.VIEW_USERNAME, SecurityTestSupport.VIEW_PASSWORD)
         ScreenTestRender str = tools.render("dashboard/reloadEcfi",
-                SecurityTestSupport.csrfParams(), "post")
+                SecurityTestSupport.csrfParams(ec), "post")
         then:
         SecurityTestSupport.looksLikeAuthzFailure(str)
     }
@@ -121,7 +124,7 @@ class SecurityAccessControlTests extends Specification {
         when:
         SecurityTestSupport.login(ec, SecurityTestSupport.VIEW_USERNAME, SecurityTestSupport.VIEW_PASSWORD)
         ScreenTestRender str = tools.render("Entity/DataImport/load",
-                SecurityTestSupport.csrfParams([location: "http://127.0.0.1:9/"]), "post")
+                SecurityTestSupport.csrfParams(ec, [location: "http://127.0.0.1:9/"]), "post")
         then:
         SecurityTestSupport.looksLikeAuthzFailure(str)
     }
@@ -130,7 +133,7 @@ class SecurityAccessControlTests extends Specification {
         when:
         SecurityTestSupport.login(ec, SecurityTestSupport.VIEW_USERNAME, SecurityTestSupport.VIEW_PASSWORD)
         ScreenTestRender str = tools.render("Entity/DataExport/EntityExport",
-                SecurityTestSupport.csrfParams([entityNames: "moqui.basic.Enumeration"]), "post")
+                SecurityTestSupport.csrfParams(ec, [entityNames: "moqui.basic.Enumeration"]), "post")
         then:
         SecurityTestSupport.looksLikeAuthzFailure(str)
     }
@@ -139,7 +142,7 @@ class SecurityAccessControlTests extends Specification {
         when:
         SecurityTestSupport.login(ec, SecurityTestSupport.VIEW_USERNAME, SecurityTestSupport.VIEW_PASSWORD)
         ScreenTestRender str = system.render("Resource/ElFinder/command",
-                SecurityTestSupport.csrfParams([cmd: "open"]), "post")
+                SecurityTestSupport.csrfParams(ec, [cmd: "open"]), "post")
         then:
         SecurityTestSupport.looksLikeAuthzFailure(str)
     }
@@ -181,14 +184,152 @@ class SecurityAccessControlTests extends Specification {
         SecurityTestSupport.looksLikeAuthzFailure(str) || SecurityTestSupport.looksLikeAuthnFailure(str)
     }
 
+    def "AutoFind of UserAuthcFactor is refused"() {
+        when:
+        SecurityTestSupport.login(ec, SecurityTestSupport.VIEW_USERNAME, SecurityTestSupport.VIEW_PASSWORD)
+        ScreenTestRender str = tools.render("AutoScreen/AutoFind",
+                [aen: "moqui.security.UserAuthcFactor"], "get")
+        String all = ((str.errorMessages ?: []) + [str.output ?: ""]).join("\n").toLowerCase()
+        then:
+        all.contains("not available through this tool") || SecurityTestSupport.looksLikeAuthzFailure(str)
+        !all.contains("factoroption")
+    }
+
+    def "AutoFind of SystemMessageRemote is refused"() {
+        when:
+        SecurityTestSupport.login(ec, SecurityTestSupport.VIEW_USERNAME, SecurityTestSupport.VIEW_PASSWORD)
+        ScreenTestRender str = tools.render("AutoScreen/AutoFind",
+                [aen: "moqui.service.message.SystemMessageRemote"], "get")
+        String all = ((str.errorMessages ?: []) + [str.output ?: ""]).join("\n").toLowerCase()
+        then:
+        all.contains("not available through this tool") || SecurityTestSupport.looksLikeAuthzFailure(str)
+        !all.contains("sec-hmac-test-secret")
+    }
+
+    def "AutoScreen create of UserGroupPermission is refused"() {
+        when:
+        SecurityTestSupport.login(ec, SecurityTestSupport.ALL_USERNAME, SecurityTestSupport.ALL_PASSWORD)
+        ScreenTestRender str = tools.render("AutoScreen/AutoEdit/AutoEditDetail/create",
+                SecurityTestSupport.csrfParams(ec, [
+                        aen: "moqui.security.UserGroup",
+                        den: "moqui.security.UserGroupPermission",
+                        userGroupId: SecurityTestSupport.ALL_GROUP_ID,
+                        userPermissionId: "REST_SCHEMA",
+                        fromDate: "2026-09-01 12:00:00.000"]), "post")
+        String all = ((str.errorMessages ?: []) + [str.output ?: ""]).join("\n").toLowerCase()
+        def row = null
+        SecurityTestSupport.withAuthzDisabled(ec) {
+            row = ec.entity.find("moqui.security.UserGroupPermission")
+                    .condition("userGroupId", SecurityTestSupport.ALL_GROUP_ID)
+                    .condition("userPermissionId", "REST_SCHEMA").one()
+        }
+        then:
+        all.contains("not available through this tool") || SecurityTestSupport.looksLikeAuthzFailure(str)
+        row == null
+    }
+
+    def "AutoFind of Enumeration still renders"() {
+        when:
+        SecurityTestSupport.login(ec, SecurityTestSupport.ALL_USERNAME, SecurityTestSupport.ALL_PASSWORD)
+        ScreenTestRender str = tools.render("AutoScreen/AutoFind",
+                [aen: "moqui.basic.Enumeration"], "get")
+        String all = ((str.errorMessages ?: []) + [str.output ?: ""]).join("\n").toLowerCase()
+        then:
+        // Do not scan the HTML dump with looksLikeAuthzFailure / looksLikeAuthnFailure: those
+        // match a bare "403"/"401" in timestamps and ids on a 50-row Enumeration page.
+        !all.contains("not available through this tool")
+        (str.errorMessages ?: []).isEmpty()
+        all.contains("find enumeration") || all.contains("enumid")
+    }
+
+    def "SYSTEM_APP ALL cannot add ADMIN group membership"() {
+        given:
+        String uid = SecurityTestSupport.userIdForUsername(ec, SecurityTestSupport.ALL_USERNAME)
+        when:
+        SecurityTestSupport.login(ec, SecurityTestSupport.ALL_USERNAME, SecurityTestSupport.ALL_PASSWORD)
+        ScreenTestRender str = system.render("Security/UserGroup/GroupUsers/createUserGroupMember",
+                SecurityTestSupport.csrfParams(ec, [userGroupId: "ADMIN", userId: uid,
+                        fromDate: ec.user.nowTimestamp.toString()]), "post")
+        String all = ((str.errorMessages ?: []) + [str.output ?: ""]).join("\n").toLowerCase()
+        def row = null
+        SecurityTestSupport.withAuthzDisabled(ec) {
+            row = ec.entity.find("moqui.security.UserGroupMember")
+                    .condition("userGroupId", "ADMIN").condition("userId", uid).one()
+        }
+        then:
+        all.contains("not authorized") || SecurityTestSupport.looksLikeAuthzFailure(str)
+        row == null
+    }
+
+    def "SYSTEM_APP ALL cannot add ADMIN_ADV group membership"() {
+        given:
+        String uid = SecurityTestSupport.userIdForUsername(ec, SecurityTestSupport.ALL_USERNAME)
+        when:
+        SecurityTestSupport.login(ec, SecurityTestSupport.ALL_USERNAME, SecurityTestSupport.ALL_PASSWORD)
+        ScreenTestRender str = system.render("Security/UserGroup/GroupUsers/createUserGroupMember",
+                SecurityTestSupport.csrfParams(ec, [userGroupId: "ADMIN_ADV", userId: uid,
+                        fromDate: ec.user.nowTimestamp.toString()]), "post")
+        String all = ((str.errorMessages ?: []) + [str.output ?: ""]).join("\n").toLowerCase()
+        def row = null
+        SecurityTestSupport.withAuthzDisabled(ec) {
+            row = ec.entity.find("moqui.security.UserGroupMember")
+                    .condition("userGroupId", "ADMIN_ADV").condition("userId", uid).one()
+        }
+        then:
+        all.contains("not authorized") || SecurityTestSupport.looksLikeAuthzFailure(str)
+        row == null
+    }
+
+    def "SYSTEM_APP ALL cannot grant GROOVY_SHELL_WEB"() {
+        when:
+        SecurityTestSupport.login(ec, SecurityTestSupport.ALL_USERNAME, SecurityTestSupport.ALL_PASSWORD)
+        ScreenTestRender str = system.render("Security/UserGroup/UserGroupDetail/createUserGroupPermission",
+                SecurityTestSupport.csrfParams(ec, [userGroupId: SecurityTestSupport.ALL_GROUP_ID,
+                        userPermissionId: "GROOVY_SHELL_WEB", fromDate: ec.user.nowTimestamp.toString()]), "post")
+        String all = ((str.errorMessages ?: []) + [str.output ?: ""]).join("\n").toLowerCase()
+        def row = null
+        SecurityTestSupport.withAuthzDisabled(ec) {
+            row = ec.entity.find("moqui.security.UserGroupPermission")
+                    .condition("userGroupId", SecurityTestSupport.ALL_GROUP_ID)
+                    .condition("userPermissionId", "GROOVY_SHELL_WEB").one()
+        }
+        then:
+        all.contains("not authorized") || SecurityTestSupport.looksLikeAuthzFailure(str)
+        row == null
+    }
+
+    def "SYSTEM_APP ALL can add a member to its own group"() {
+        given:
+        String uid = SecurityTestSupport.userIdForUsername(ec, SecurityTestSupport.NONE_USERNAME)
+        java.sql.Timestamp fromDate = null
+        when:
+        SecurityTestSupport.login(ec, SecurityTestSupport.ALL_USERNAME, SecurityTestSupport.ALL_PASSWORD)
+        fromDate = ec.user.nowTimestamp
+        ScreenTestRender str = system.render("Security/UserGroup/GroupUsers/createUserGroupMember",
+                SecurityTestSupport.csrfParams(ec, [userGroupId: SecurityTestSupport.ALL_GROUP_ID, userId: uid,
+                        fromDate: fromDate.toString()]), "post")
+        def row = null
+        SecurityTestSupport.withAuthzDisabled(ec) {
+            row = ec.entity.find("moqui.security.UserGroupMember")
+                    .condition("userGroupId", SecurityTestSupport.ALL_GROUP_ID).condition("userId", uid).one()
+        }
+        then:
+        !SecurityTestSupport.looksLikeAuthzFailure(str)
+        row != null
+        cleanup:
+        SecurityTestSupport.withAuthzDisabled(ec) { row?.delete() }
+    }
+
     def "REST login succeeds without a session token"() {
         when:
         ScreenTestRender str = rest.render("login",
                 [username: SecurityTestSupport.ALL_USERNAME, password: SecurityTestSupport.ALL_PASSWORD], "post")
-        String all = ((str.errorMessages ?: []) + [str.output ?: ""]).join("\n").toLowerCase()
+        String out = ((str.output ?: "") + (str.jsonObject ?: "")).toLowerCase()
         then:
-        !all.contains("session token required")
-        (str.output ?: "").contains("loggedIn") || !SecurityTestSupport.looksLikeAuthnFailure(str)
+        !out.contains("session token required")
+        // Must actually log in. An empty or error render is a failure, not a pass.
+        out.contains("loggedin")
+        out.contains("true")
     }
 
     def "setPreference with a valid session token executes and stores the preference"() {
@@ -196,7 +337,7 @@ class SecurityAccessControlTests extends Specification {
         SecurityTestSupport.login(ec, SecurityTestSupport.ALL_USERNAME, SecurityTestSupport.ALL_PASSWORD)
         ScreenTest apps = ec.screen.makeTest().baseScreenPath("apps")
         ScreenTestRender str = apps.render("setPreference",
-                SecurityTestSupport.csrfParams([preferenceKey: "secCsrfPositive", preferenceValue: "csrf-ran-ok"]), "post")
+                SecurityTestSupport.csrfParams(ec, [preferenceKey: "secCsrfPositive", preferenceValue: "csrf-ran-ok"]), "post")
         String all = ((str.errorMessages ?: []) + [str.output ?: ""]).join("\n").toLowerCase()
         ScreenTestRender getStr = apps.render("getPreferences", [keyRegexp: "secCsrfPositive"], "get")
         String getOut = (getStr.output ?: "") + (getStr.jsonObject ?: "")

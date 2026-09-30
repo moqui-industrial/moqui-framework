@@ -64,6 +64,54 @@ class SecurityHandshakeTests extends Specification {
         SecurityTestSupport.logout(ec)
     }
 
+    def "handshake with no credentials does not keep a previously logged-in user"() {
+        when:
+        SecurityTestSupport.login(ec, SecurityTestSupport.ALL_USERNAME, SecurityTestSupport.ALL_PASSWORD)
+        HandshakeRequest anon = Stub(HandshakeRequest) {
+            getHttpSession() >> { throw new RuntimeException("no session") }
+            getHeaders() >> [:]
+            getParameterMap() >> [:]
+        }
+        SecurityTestSupport.eci(ec).userFacade.initFromHandshakeRequest(anon)
+        then:
+        ec.user.username == null
+        cleanup:
+        SecurityTestSupport.logout(ec)
+    }
+
+    def "handshake with wrong Basic does not keep a previously logged-in user"() {
+        when:
+        SecurityTestSupport.login(ec, SecurityTestSupport.ALL_USERNAME, SecurityTestSupport.ALL_PASSWORD)
+        String basic = "Basic " + "wrong:pass".bytes.encodeBase64().toString()
+        HandshakeRequest req = Stub(HandshakeRequest) {
+            getHttpSession() >> { throw new RuntimeException("no session") }
+            getHeaders() >> [Authorization: [basic]]
+            getParameterMap() >> [:]
+        }
+        SecurityTestSupport.eci(ec).userFacade.initFromHandshakeRequest(req)
+        then:
+        ec.user.username == null
+        cleanup:
+        SecurityTestSupport.logout(ec)
+        ec.message.clearAll()
+    }
+
+    def "handshake with garbage api_key does not keep a previously logged-in user"() {
+        when:
+        SecurityTestSupport.login(ec, SecurityTestSupport.ALL_USERNAME, SecurityTestSupport.ALL_PASSWORD)
+        HandshakeRequest req = Stub(HandshakeRequest) {
+            getHttpSession() >> { throw new RuntimeException("no session") }
+            getHeaders() >> [api_key: ["not-a-real-login-key"]]
+            getParameterMap() >> [:]
+        }
+        SecurityTestSupport.eci(ec).userFacade.initFromHandshakeRequest(req)
+        then:
+        ec.user.username == null
+        cleanup:
+        SecurityTestSupport.logout(ec)
+        ec.message.clearAll()
+    }
+
     def "anonymous user does not have GROOVY_SHELL_WEB"() {
         expect:
         !ec.user.userId
@@ -71,11 +119,31 @@ class SecurityHandshakeTests extends Specification {
     }
 
     def "notification listener ignores endpoints with no userId"() {
+        // registerEndpoint is void, so Spock would skip it as a condition; assert the endpoint was not stored.
         when:
         def listener = new NotificationWebSocketListener()
         def ep = new NotificationEndpoint()
+        listener.registerEndpoint(ep)
         then:
         ep.userId == null
+        listener.@endpointsByUser.isEmpty()
+    }
+
+    def "notification listener registers an endpoint that has a userId"() {
+        // positive control for the case above; without it, "never registers anything" would pass
+        given:
+        def listener = new NotificationWebSocketListener()
+        def ep = new NotificationEndpoint()
+        ep.@userId = SecurityTestSupport.ALL_USER_ID
+        ep.@session = Stub(jakarta.websocket.Session) { getId() >> "sec-test-session" }
+        when:
         listener.registerEndpoint(ep)
+        then:
+        listener.@endpointsByUser.size() == 1
+        listener.@endpointsByUser.get(SecurityTestSupport.ALL_USER_ID)?.get("sec-test-session")?.is(ep)
+        when:
+        listener.deregisterEndpoint(ep)
+        then:
+        listener.@endpointsByUser.isEmpty()
     }
 }
