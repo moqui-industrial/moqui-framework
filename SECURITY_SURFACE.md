@@ -35,17 +35,17 @@ There is no `/rest/api_key` minting transition and no `/rest/moquiSessionToken` 
 
 ### Authorization in one paragraph
 
-Screens use `require-authentication`: `true` (default), `false`, `anonymous-view`, or `anonymous-all`. Artifact authz (`ArtifactAuthz` / `ArtifactGroup`) is checked as each screen, transition, service, REST path, and entity is pushed on the execution stack. **Inheritable** allow/always records authorize children on that stack (sub-screens, transitions, services, entities) unless a more specific DENY wins. Screen transitions use `authz-action` (`view` / `create` / `update` / `delete` / `all`): explicit, else from a transition-level `service-call`, else `view` if `read-only`, else `update` if the transition has actions, else `view`. A VIEW-only inheritable authz does **not** run mutating Tools/System transitions (cache clear, Service Run, instance start, and similar). A few tools also check `UserPermission` (`GROOVY_SHELL_WEB`, `SQL_RUNNER_WEB`, `SERVICE_LOAD_RUNNER`, `ADMIN_LOGIN_AS`, `ADMIN_PASSWORD`, `ElasticRemote`, `KibanaRemote`). Details: [Security — Artifact-Aware Authorization](https://www.moqui.org/m/docs/framework/Security).
+Screens use `require-authentication`: `true` (default), `false`, `anonymous-view`, or `anonymous-all`. Artifact authz (`ArtifactAuthz` / `ArtifactGroup`) is checked as each screen, transition, service, REST path, and entity is pushed on the execution stack. **Inheritable** allow/always records authorize children on that stack (sub-screens, transitions, services, entities) unless a more specific DENY wins. Screen transitions use `authz-action` (`view` / `create` / `update` / `delete` / `all`): explicit, else from a transition-level `service-call`, else `view` if `read-only`, else `update` if the transition has actions, else `view`. A VIEW-only inheritable authz does **not** run mutating Tools/System transitions (cache clear, Service Run, instance start, and similar). A few tools also check `UserPermission` (`GROOVY_SHELL_WEB`, `SQL_RUNNER_WEB`, `SERVICE_LOAD_RUNNER`, `ADMIN_LOGIN_AS`, `ADMIN_PASSWORD`, `ElasticRemote`, `KibanaRemote`, `LlmGateway`). Details: [Security — Artifact-Aware Authorization](https://www.moqui.org/m/docs/framework/Security).
 
-Seed (runtime `ToolsSecurityData.xml`, framework `SecurityTypeData.xml`): `ADMIN` has `AUTHZT_ALWAYS` + `AUTHZA_ALL` + `inheritAuthz=Y` on the Tools app root, System app root, and `/moqui` Service REST root (`MOQUI_API`). `ADMIN_ADV` has the tool-gate permissions above (`GROOVY_SHELL_WEB`, `SQL_RUNNER_WEB`, `SERVICE_LOAD_RUNNER`, `ADMIN_LOGIN_AS`); `ADMIN` also has `ADMIN_PASSWORD`, `ElasticRemote`, and `KibanaRemote`. `ALL_USERS` can view Screen Tree / App List.
+Seed (runtime `ToolsSecurityData.xml`, framework `SecurityTypeData.xml` / `LlmTypeData.xml`): `ADMIN` has `AUTHZT_ALWAYS` + `AUTHZA_ALL` + `inheritAuthz=Y` on the Tools app root, System app root, Assist screen (`ASSIST_APP`), and `/moqui` Service REST root (`MOQUI_API`). `ADMIN_ADV` has the tool-gate permissions above (`GROOVY_SHELL_WEB`, `SQL_RUNNER_WEB`, `SERVICE_LOAD_RUNNER`, `ADMIN_LOGIN_AS`); `ADMIN` also has `ADMIN_PASSWORD`, `ElasticRemote`, `KibanaRemote`, and `LlmGateway`. `ALL_USERS` can view Screen Tree / App List. `AT_LLM` is tarpit-enabled (seed 30 hits / 60s then 5 minutes blocked, `inheritAuthz=N` so a profile allow does not skip later service/screen/entity checks).
 
-System/Security screens still administer users and groups, but membership in `user_privileged_groups` (default `ADMIN`, `ADMIN_ADV`) can be changed only by a current member of that group. `UserGroupPermission` rows for `user_sealed_permissions` (default the tool-gate list plus `ADMIN_PASSWORD`, `ElasticRemote`, `KibanaRemote`, `REST_SCHEMA`) can be granted only by a caller who already has that permission. Both lists are `default-property` values in `MoquiDefaultConf.xml`. Seed/install (`disableAuthz`) is unchanged.
+System/Security screens still administer users and groups, but membership in `user_privileged_groups` (default `ADMIN`, `ADMIN_ADV`) can be changed only by a current member of that group. `UserGroupPermission` rows for `user_sealed_permissions` (default the tool-gate list plus `ADMIN_PASSWORD`, `ElasticRemote`, `KibanaRemote`, `REST_SCHEMA`) can be granted only by a caller who already has that permission. Both lists are `default-property` values in `MoquiDefaultConf.xml`. `LlmGateway` is in `user_sealed_permissions` with `ElasticRemote` / `KibanaRemote`. Seed/install (`disableAuthz`) is unchanged.
 
 ### Cross-cutting controls (assume unless a row says otherwise)
 
 - CSRF: non-GET screen transitions require the session token (`moquiSessionToken` / `X-CSRF-Token`) unless `require-session-token="false"`. `webapp_require_session_token` defaults true.
 - Login throttle: `user-facade.login` `max-failures="3"` disables the account for `disable-minutes="5"` after consecutive failures (re-enabled after that window); not a substitute for WAF-level throttling of the login endpoint.
-- Tarpit: screens, transitions, and services on; entities off. Per-user velocity, not a flood WAF. Demo data adds an example ALL_SCREENS tarpit (120 hits / 60s).
+- Tarpit: screens, transitions, services, and `AT_LLM` on; entities off. Per-user velocity, not a flood WAF. Demo data adds an example ALL_SCREENS tarpit (120 hits / 60s). LLM profiles seed 30 hits / 60s then 5 minutes blocked.
 - HTML: `parameter.@allow-html` is `none` by default; `safe` cleans with Jsoup (`Safelist.relaxed()`); `any` is unconstrained.
 - Uploads: Commons FileUpload to `runtime/tmp`; `upload-executable-allow` defaults false (`WebUtilities.isExecutable`: PE/ELF/class/Mach-O magic and `#!` shebang; ZIP/JAR is not treated as executable).
 - CORS: `handle-cors` defaults true; `Access-Control-Allow-Credentials` is true; `Access-Control-Allow-Origin` is set if the request `Origin` is in `webapp.@allow-origins` (empty by default) or `allow-origins` contains `*`, and always for same-origin requests; other origins get 401.
@@ -72,10 +72,10 @@ Configured on `webapp-list.webapp` in `framework/src/main/resources/MoquiDefault
 | ElasticSearch / OpenSearch proxy | `/elastic/*` | on (proxy) | logged in | `UserPermission` `ElasticRemote` (`ADMIN` in seed) | Jetty `ProxyServlet$Transparent` to `elasticsearch_url` (default `http://127.0.0.1:9200`). This is the **full cluster HTTP API** if the permission is granted. Keep OS/ES on a private network regardless. |
 | Kibana proxy | `/kibana/*` | on (proxy) | logged in | `KibanaRemote` (`ADMIN` in seed) | Same pattern to `kibana_host:kibana_port`. Backing Kibana process is out of scope. |
 | `MoquiAuthFilter` | `/elastic/*`, `/kibana/*`, `/llm/*` | on | session / Basic / api_key / body | named permission init-param | Used for non-`MoquiServlet` servlets. OPTIONS preflight runs CORS before auth. |
-| `LlmAuthFilter` (`MoquiAuthFilter`) | `/llm/*` | on | session / Basic / `login_key` | `LlmGateway` | Same filter class as Elastic/Kibana. OPTIONS preflight is answered before `initFromHttpRequest`. |
-| `LlmServlet` | `/llm/*` | on | via `LlmAuthFilter` | `LlmGateway` | OpenAI-shaped gateway (`/llm/v1/chat`, conversations, profiles). Not a provider-key proxy. |
-| `A2AServlet` | `/llm/a2a/*` | **off** (`a2a_enabled=false` → 404) | via `LlmAuthFilter` | `LlmGateway` | A2A 1.0 JSON-RPC + SSE. Strict `A2A-Version: 1.0`. |
-| `A2ACardServlet` | `/.well-known/agent-card.json` | **off** (same flag) | **none** | — | Public discovery. Advertised URL from `a2a_public_url`, or `X-Forwarded-Proto`/`X-Forwarded-Host` only if `a2a_trust_forwarded_headers=true`. |
+| `LlmAuthFilter` (`MoquiAuthFilter`) | `/llm/*` | on | session / Basic / `login_key` | `LlmGateway` | Same filter class as Elastic/Kibana. OPTIONS preflight is answered before `initFromHttpRequest`. CSRF is checked in `LlmServlet` (not in this filter). |
+| `LlmServlet` | `/llm/*` | on | via `LlmAuthFilter` | `LlmGateway` + `AT_LLM` | Agent gateway (`/llm/v1/chat`, resume, cancel, conversations, profiles), not a provider-key proxy. Tool flags are fail-closed on the **default** profile; the runtime **assist** profile turns tools on (see Assist below). POST needs CSRF unless the request already has an authenticated-user attribute from Basic/`login_key`. SSE is pumped on the request thread (`async-supported` off so the filter EC stays live). |
+| `A2AServlet` | `/llm/a2a/*` | **off** unless `a2a_enabled` is exactly `true` | via `LlmAuthFilter` | `LlmGateway` | A2A 1.0 JSON-RPC + SSE. Strict `A2A-Version: 1.0`. Disabled anonymous POST is 401 from the filter before the servlet would 404. When enabled, `a2a_default_profile` is `assist` (the privileged profile). `Part.data` is capped like text. A continuation is claimed `WORKING` before the model runs so two resumes cannot both proceed. |
+| `A2ACardServlet` | `/.well-known/agent-card.json` | **off** (same flag; 404) | **none** | — | Public discovery when A2A is on. `robots.txt` does not disallow this path. Advertised URL is `a2a_public_url`, else `webapp_http_host`, else the request host with `Vary: Host`. `X-Forwarded-*` only if `a2a_trust_forwarded_headers=true`. |
 | `ElasticRequestLogFilter` | `/*` | on | — | — | Writes request logs to OpenSearch. Not an entry point. |
 | Notification WebSocket | `/notws` | on (`endpoint enabled="true"`) | HTTP session / handshake | none beyond being logged in to receive | `NotificationEndpoint`. Subscribe/unsubscribe topic names. Server pushes only to `NotificationMessage.notifyUserIds` for that user; an unauthenticated upgrade is not registered (`userId == null` is ignored). Topics are not a separate ACL: a logged-in user can subscribe to any topic name and will receive messages **already targeted at them**. Handshake Origin must be empty, same-origin (Host header), or in `webapp.@allow-origins` (same list as CORS). |
 | Groovy Shell WebSocket | `/groovysh` | on | HTTP session / handshake | `GROOVY_SHELL_WEB` (`ADMIN_ADV`) | `GroovyShellEndpoint`. **RCE by design** in the running JVM (`GroovyShell` with the EC binding). Idle 300s, eval timeout 900s, endpoint timeout 900000ms. Same Origin check as `/notws`. Disable or keep off the public internet. |
@@ -88,10 +88,13 @@ Root screen: `component://webroot/screen/webroot.xml`, `require-authentication="
 
 `MoquiConf.xml` in the tools component mounts on the `apps` screen:
 
+- **assist** → `component://tools/screen/Assist.xml`
 - **system** → `component://tools/screen/System.xml`
 - **tools** → `component://tools/screen/Tools.xml`
 
 `qapps` and `vapps` are thin SPA shell screens with no subscreens of their own; the Quasar/Vuet shells build menu and link paths in the screen-tree context of the `apps` tree.
+
+Assist (`/qapps/assist`) is a **sibling** of System and Tools on the `apps` screen (`menu-index` 97), not a Tools sub-screen. VIEW-only or stubbed Tools does **not** unmount Assist.
 
 ### Public and weakly authenticated root paths
 
@@ -103,7 +106,7 @@ Root screen: `component://webroot/screen/webroot.xml`, `require-authentication="
 | `/status` | client IP in `webapp_status_ips` (plus `127.0.0.1` and IPv6 loopback) | JSON process stats from `getStatusMap()`. Sensitive fields (version, OS, datasources) are always omitted here (`includeSensitive` is not exposed via this transition). |
 | `/menuData` | login required (401 if no user) | Menu JSON for the SPA shells; follows the target screen path. |
 | `/email/{emailMessageId}` | **none** | 1×1 PNG tracking pixel; `disableAuthz` update of `EmailMessage` to `ES_VIEWED`. Unauthenticated state change given a message id (dot suffix stripped). |
-| `/robots.txt`, `/favicon.ico` | none | robots.txt disallows `/apps`, `/vapps`, `/qapps`, `/rest`, `/rpc`, `/status`, `/menuData`. |
+| `/robots.txt`, `/favicon.ico` | none | robots.txt disallows `/apps`, `/vapps`, `/qapps`, `/rest`, `/rpc`, `/status`, `/menuData`, `/llm`. |
 | `/error/*` | none | Unauthorized, Forbidden, NotFound, TooMany, InternalError. |
 | `/echopath` | none | Echoes extra path; standalone, `track-artifact-hit="false"`. Dev-oriented. |
 | `/toolstatic` | `anonymous-view` | Swagger UI static files. Schema *data* is under `/rest/*.swagger` (authenticated). |
@@ -146,6 +149,23 @@ Default seed: `ADMIN` inherit-all on the app root. Extra `UserPermission` gates 
 
 `ADMIN_PASSWORD` is required to change another user’s password. `ADMIN_LOGIN_AS` (`ADMIN_ADV`) is login-as.
 
+### Assist (`/qapps/assist`)
+
+Chat-plus-canvas agent UI. Default **on**. Not a Tools sub-screen (see screen tree above). Only the Quasar (`qvue`) render is implemented; `/apps/assist` and `/vapps/assist` show a stub.
+
+| Surface | Authn | Authz | Considerations |
+| --- | --- | --- | --- |
+| Screen `/qapps/assist` | logged in | `LlmGateway` on render and on `setTitle`; `ASSIST_APP` inherit-all for `ADMIN` | `setTitle` also loads the conversation as owner or `ADMIN`. CSRF applies. |
+| Assist profile (`tools/MoquiConf.xml`) | — | tools run as the current user | **Default on** with `allow-write-ui`, `allow-browse`, `allow-run-service`, `allow-unprefixed-request`, `allow-enter-sim`. `allow-client-system` is false. One `allowed-basic-entity` with `package="moqui.basic"`. Default framework profile is fail-closed (no those flags, no `allowed-basic-entity`). |
+| `browse` / `request` / `run_service` | via `/llm/v1` | user’s artifact authz at execution | Unprefixed `request` is any screen/REST path the user can hit. `request` strips `authUsername`, `authPassword`, `authUserAccount`, and `currentPassword` before the screen render so a tool body cannot `loginUser`. `run_service` calls only services with `authenticate="true"` (entity-auto names still authz at the entity). `browse` screen and service catalogs are not filtered by artifact authz; REST and entity leaves are. |
+| `find_basic` | via `/llm/v1` | profile `allowed-basic-entity`; artifact authz **off** for the find | Read-only key and text for drop-down entity-options. Attached only when the profile has at least one allow element. Assist allows package `moqui.basic` (full-string match, so not `moqui.basic.email` or `moqui.basic.print`). An entity outside the list is rejected and not queried. |
+| `write_ui` | yield/resume on `/llm/v1` | same | OpenUI Lang. Query, Mutation, Link, markdown, image, and Lookup `optionsUrl` must be a same-origin path (`AssistOpenUiNav.validatePath`: no scheme, `//`, `\`, whitespace, or `..`, and `new URL` origin must match). `kind=vue-sfc` is off unless the profile sets `allow-vue-sfc` (assist does not). Static `/js/assist/*` (including vendored OpenUI lang-core) and `/libs/*` are public root-screen file resources. Chart.js, mermaid, marked, DOMPurify, and highlight.js load from `/libs` (webroot `downloadFiles`), as do SimpleMDE and CKEditor 4 standard-all on the Vue shell. |
+| `find_skill` / `enter_sim` | via `/llm/v1` | `SkillIndex` uses `disableAuthz` (servlet is not under `ASSIST_APP`) | HOLD `TransactionCacheDb`: entity CUD for JDBC entities stays in H2. Partial updates write only fields that are set. HOLD `forUpdate` does not lock production. Deletes do not push a real-time data feed. Also refused in sim: `sqlFind`, service jobs, `simpleHttpStringRequest`, email poll, file and JCR writes, print send, `runAsync`, `runInWorkerThread`, `ServiceCallAsync`, and `RestClient` except the LLM provider call (`allowInSim`). `getConnection` stays available because excluded entities (`moqui.llm.*`, sequences) and the entity engine use it. Non-JDBC entity groups throw instead of writing the real store. Nested sim copies the parent's `request` / `browse` / `run_service` tools. `enter_sim` attaches only when `allow-enter-sim` is true **and** the client requests it. Overlay SQL uses H2 column names from the `h2` `name-replace` list, so `VALUE` is `THE_VALUE`. |
+| Force Skill Use | UI toggle, default **off** | `SkillUseGate` | When on, refuses `browse` / `find_basic` / `request` / `run_service` / `write_ui` until a skill is active (except in sim). World-rim `run_service` and mutating `request` are gated even when the toggle is off: no skill refuses them; `reversible` runs; `confirm` and `irreversible` yield until the user sends `{confirmed:true}`. GET/HEAD `request`, `browse`, `find_basic`, and `write_ui` stay available without a skill. Sim is not gated. |
+| Logging | — | — | `llm_log_content` (default false) controls `LlmCallLog` JSON only. Compact redacted INFO traces always run. Unredacted `TOREMOVE` dumps require `llm_trace_dump=true` (system property or env). |
+
+Shipped skills: runtime `tools/skill/*.md` (`create-user-account`, `place-sales-order` using `/apps/marble/Order/...` screen transitions) plus component `LlmSkill` install data (MarbleERP). `SkillIndex` loads both. A sim-proposed row cannot take the name of a shipped file or an active human/world skill. Prompt inject lists active and shipped skills only. A proposed skill is selectable by exact name and is promoted only after that name is the active skill and a later server-side world write succeeds. `risk` is enforced on that world write (`reversible` runs, `confirm` and `irreversible` wait for a click). Skills are global (no owner). `SkillIndex` reads and writes them with authz disabled because `/llm` is not under the Assist screen.
+
 ## REST, RPC, and related HTTP APIs
 
 `rest.xml` and `rpc.xml` sit directly under the root screen with `require-authentication="false"` so **transitions** decide. They do **not** grant inheritable ADMIN authz (unlike Tools/System screens). Login for these paths is the UserFacade request init above.
@@ -154,12 +174,13 @@ Default seed: `ADMIN` inherit-all on the app root. Extra `UserPermission` gates 
 | --- | --- | --- | --- | --- |
 | `POST /rest/login` | Session login | username/password (`code` if MFA); **no CSRF token** | — | If MFA is required and no code, JSON factor info; complete with `POST /rest/sendOtp` and `/rest/verifyOtp`. `POST /rest/logout` ends the session. |
 | `/rest/e1`, `/rest/m1`, deprecated `/rest/v1` | **Generic entity CRUD** (any entity or master) | required | **entity** artifact authz (`AT_ENTITY`). Tarpit off for entities by default. `rest.xml` does not inherit ADMIN-all | Wide engine; width is the caller’s entity (or inheritable) authz, not “ADMIN can hit Tools.” Bulk JSON list bodies. `X-HTTP-Method-Override` on POST. `dependents` / `master` documents. UserAccount JSON omits password hash fields (same list as Service REST). Identity-admin and secret-config entities are not available here. Do not grant catch-all entity authz to internet users. |
-| `/rest/s1/{root}/...` | Declared Service REST (`*.rest.xml`) | per resource (`authenticate` on the resource/method) | `AT_REST_PATH`; seed `MOQUI_API` `/moqui` inherit-all for `ADMIN` | Runtime root **moqui**: artifacts, dataDocuments, basic geo/enum/status/uom, email, print, entity sync, systemMessages, users, wiki. Other components add roots. UserAccount JSON (list/one and nested maps) omits `currentPassword`, `resetPassword`, salt, and hash type. `PATCH` of users identity fields (`disabled`, `username`, `emailAddress`, …) requires the ADMIN group; EmailServer host/port/password writes do too. |
+| `/rest/s1/{root}/...` | Declared Service REST (`*.rest.xml`) | per resource (`authenticate` on the resource/method) | `AT_REST_PATH`; seed `MOQUI_API` `/moqui` inherit-all for `ADMIN` | Runtime root **moqui**: artifacts, dataDocuments, basic geo/enum/status/uom, email, print, entity sync, systemMessages, users, wiki, **llm**. Other components add roots. UserAccount JSON (list/one and nested maps) omits `currentPassword`, `resetPassword`, salt, and hash type. `PATCH` of users identity fields (`disabled`, `username`, `emailAddress`, …) requires the ADMIN group; EmailServer host/port/password writes do too. |
+| `/rest/s1/moqui/llm/*` | LLM sync wrappers (`chat`, `resume`, `cancel`, get conversation, list profiles) | required | `MOQUI_API` inherit + `AT_LLM` VIEW + **`LlmGateway` permission** (checked in `LlmGateway.prepareClient` / list / get / cancel) | `allow-remote="true"` (JSON-RPC siblings too). Streaming SSE is `/llm/v1` only. `validate="false"` on chat/resume (free-form bodies). Does not use `LlmAuthFilter`; the permission check is in the gateway. |
 | `/rest/sm/{type}/{remote}/{id?}` | Inbound SystemMessage | `require-session-token="false"`; see auth enum | login + service authz, **or** HMAC then `loginAnonymousIfNoUser`, **or** `SmatNone` then `loginAnonymousIfNoUser` | Path: `systemMessageTypeId` / `systemMessageRemoteId` / optional `remoteMessageId`. Body is the message. Response JSON `{systemMessageIdList:[...]}`. `SmatHmacSha256`: header HMAC-SHA256 of body, Base64. `SmatHmacSha256Timestamp`: Stripe-style `t=` / `v1=`, hex HMAC of `timestamp.body`, **5 minute** window + 10s skew; a repeated `(remote, t, v1)` inside the window is rejected. Send (`send#SystemMessageRest`) signs with the same algorithms. `SmatNone` is explicit no-auth ingest (use only where the network is otherwise locked down). Replay cache `moqui.security.hmac.replay` is `type="distributed"` (still per-node unless a real distributed cache factory is configured). Only configured remotes. |
 | `/rest/entity.json` `.raml` `.swagger`, `master.*`, `service.swagger` `.raml` | Schema dumps | required | login + `REST_SCHEMA` permission (ADMIN seed) | Model and API shape. |
 | `/rpc/json` | JSON-RPC 2.0 | via service parameters / request init | **only services with `allow-remote="true"`**, then service authz | Named params; JSON-RPC batches (array body) run each call through the same allow-remote + authz checks. XML-RPC is gone. Adding `allow-remote` is an exposure decision. |
 
-Framework services with `allow-remote="true"` (not a complete ecosystem list): `org.moqui.impl.BasicServices` find/get helpers (geo, status, enumeration), `UserServices.set#Preference`, `reset#Password`, `EntitySyncServices.put#EntitySyncData` and `get#EntitySyncData`, `SystemMessageServices.receive#IncomingSystemMessage`.
+Framework services with `allow-remote="true"` (not a complete ecosystem list): `org.moqui.impl.BasicServices` find/get helpers (geo, status, enumeration), `UserServices.set#Preference`, `reset#Password`, `EntitySyncServices.put#EntitySyncData` and `get#EntitySyncData`, `SystemMessageServices.receive#IncomingSystemMessage`, `LlmServices` chat/resume/cancel/get conversation and get profiles.
 
 `update#Password` and `reset#Password` are `authenticate="anonymous-all"` (needed for the Login screen). `reset#Password` is also `allow-remote="true"` (untrusted input: username → email). `update#Password` is not `allow-remote`.
 
@@ -191,7 +212,7 @@ Framework/runtime already treat mutating transitions as `update`/`all` (not VIEW
 The `moqui-demo` component then:
 
 1. **Disables** `/groovysh` (`webapp.endpoint` `enabled="false"`). `/notws` stays on.
-2. **Replaces sharp screens** with `Disabled.xml` (`menu-include="false"`): GroovyShell, DataImport, DataExport, DataSnapshot, SpeedTest, SqlRunner, SqlScriptRunner, ServiceRun, ServiceLoadRunner, ElFinder.
+2. **Replaces sharp screens** with `Disabled.xml` (`menu-include="false"`): GroovyShell, DataImport, DataExport, DataSnapshot, SpeedTest, SqlRunner, SqlScriptRunner, ServiceRun, ServiceLoadRunner, ElFinder. Assist is a separate `apps` sibling with `LlmGateway`; demo does **not** stub it — revoke `LlmGateway` / stub `Assist.xml` on a public demo if you do not want an ADMIN-session agent.
 3. **Narrows inherit-all admin authz** in demo-type data (same `artifactAuthzId` as seed):
    - `TOOLS_APP_ADMIN`, `SYSTEM_APP_ADMIN`, `MOQUI_API_ADMIN`: `AUTHZA_ALL` → `AUTHZA_VIEW`
    - `EntitySyncServicesADMIN`, `SystemMessageServicesADMIN`: `AUTHZA_ALL` → `AUTHZA_VIEW` (JSON-RPC put/receive)
@@ -228,7 +249,8 @@ Authz overwrite example (same primary key as seed):
 | Disable tool factories | `tool-factory.@disabled="true"` (SubEtha, H2 server, Jackrabbit) | Extra listen ports |
 | Don’t use H2 in production | Postgres/MySQL; no `start-server-args` / disable H2 factory | H2 TCP 9092 |
 | Pause / zero jobs | `scheduled_job_check_time=0`; keep poll-email / sync / message jobs paused | Untrusted email, sync, consume |
-| Don’t mount Tools | Omit the tools component or its `subscreens-item` | Whole admin UI (usually too coarse except hardened public sites) |
+| Don’t mount Tools | Omit the tools component or its `subscreens-item` | Whole admin UI (usually too coarse except hardened public sites). Assist is a separate `subscreens-item`; omit or stub it independently |
+| Revoke / don’t grant `LlmGateway` | No `UserGroupPermission`; stub `Assist.xml`; leave `a2a_enabled=false` | `/llm/*` filter, Assist render, and (if A2A is on) JSON-RPC. Service REST `/rest/s1/moqui/llm` still needs `MOQUI_API` + `AT_LLM` |
 | Stub REST/RPC | Same Disabled.xml idea, or omit transitions you don’t want | Generic entity REST / JSON-RPC (demo leaves these up; VIEW-only `MOQUI_API` still allows GET-ish `/rest/s1/moqui`) |
 | Network | WAF/proxy; don’t publish 8080, 9092, 2525, 8081, 9200 | Everything in this file |
 
@@ -239,9 +261,9 @@ Authz overwrite example (same primary key as seed):
 - `/elastic/*` servlet remains; demo thru-dates `ElasticRemote` so ADMIN cannot use the proxy
 - Demo still loads demo users and passwords; that is the opposite of production data policy
 
-**Production lock-down** is usually: edge WAF + no demo data + no `ADMIN` on internet-facing users + disable unused factories/endpoints + keep Tools off the public hostname.
+**Production lock-down** is usually: edge WAF + no demo data + no `ADMIN` on internet-facing users + disable unused factories/endpoints + keep Tools **and Assist** off the public hostname.
 
-**Demo lock-down** is: keep the apps usable with a well-known login, but take away RCE, SQL, import, ElFinder, and write-admin.
+**Demo lock-down** is: keep the apps usable with a well-known login, but take away RCE, SQL, import, ElFinder, write-admin, and (if you do not want it) the Assist agent.
 
 ## How to use this for review
 

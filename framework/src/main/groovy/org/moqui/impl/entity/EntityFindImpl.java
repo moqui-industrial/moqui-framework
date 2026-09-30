@@ -72,6 +72,17 @@ public class EntityFindImpl extends EntityFindBase {
 
     private EntityValueBase oneInternal(EntityConditionImplBase whereCondition, FieldInfo[] fieldInfoArray,
             FieldOrderOptions[] fieldOptionsArray, TransactionCacheDb overlay) throws SQLException {
+        boolean overlayNames = overlay != null;
+        if (overlayNames) OverlayColumnNames.setActive(true);
+        try {
+            return oneInternalBody(whereCondition, fieldInfoArray, fieldOptionsArray, overlay);
+        } finally {
+            if (overlayNames) OverlayColumnNames.setActive(false);
+        }
+    }
+
+    private EntityValueBase oneInternalBody(EntityConditionImplBase whereCondition, FieldInfo[] fieldInfoArray,
+            FieldOrderOptions[] fieldOptionsArray, TransactionCacheDb overlay) throws SQLException {
         EntityDefinition ed = getEntityDef();
 
         // table doesn't exist, just return null
@@ -166,6 +177,8 @@ public class EntityFindImpl extends EntityFindBase {
         EntityDefinition ed = getEntityDef();
         db.ensureReady(ed);
         db.beginBypass();
+        boolean wasForUpdate = getForUpdate();
+        if (wasForUpdate && db.isHold()) forUpdate(false);
         try {
             try (EntityListIterator eli = iteratorInternal(whereCondition, havingCondition, orderByExpanded,
                     fieldInfoArray, fieldOptionsArray, null, null)) {
@@ -179,11 +192,25 @@ public class EntityFindImpl extends EntityFindBase {
                 }
             }
         } finally {
+            if (wasForUpdate && db.isHold()) forUpdate(true);
             db.endBypass();
         }
     }
 
     private EntityListIterator iteratorInternal(EntityConditionImplBase whereCondition, EntityConditionImplBase havingCondition,
+            ArrayList<String> orderByExpanded, FieldInfo[] fieldInfoArray, FieldOrderOptions[] fieldOptionsArray,
+            TransactionCacheDb overlay, EntityTxCache mergeCache) throws SQLException {
+        boolean overlayNames = overlay != null;
+        if (overlayNames) OverlayColumnNames.setActive(true);
+        try {
+            return iteratorInternalBody(whereCondition, havingCondition, orderByExpanded, fieldInfoArray,
+                    fieldOptionsArray, overlay, mergeCache);
+        } finally {
+            if (overlayNames) OverlayColumnNames.setActive(false);
+        }
+    }
+
+    private EntityListIterator iteratorInternalBody(EntityConditionImplBase whereCondition, EntityConditionImplBase havingCondition,
             ArrayList<String> orderByExpanded, FieldInfo[] fieldInfoArray, FieldOrderOptions[] fieldOptionsArray,
             TransactionCacheDb overlay, EntityTxCache mergeCache) throws SQLException {
         EntityDefinition ed = this.getEntityDef();
@@ -253,6 +280,17 @@ public class EntityFindImpl extends EntityFindBase {
     }
 
     private long countInternal(EntityConditionImplBase whereCondition, EntityConditionImplBase havingCondition,
+            FieldInfo[] fieldInfoArray, FieldOrderOptions[] fieldOptionsArray, TransactionCacheDb overlay) throws SQLException {
+        boolean overlayNames = overlay != null;
+        if (overlayNames) OverlayColumnNames.setActive(true);
+        try {
+            return countInternalBody(whereCondition, havingCondition, fieldInfoArray, fieldOptionsArray, overlay);
+        } finally {
+            if (overlayNames) OverlayColumnNames.setActive(false);
+        }
+    }
+
+    private long countInternalBody(EntityConditionImplBase whereCondition, EntityConditionImplBase havingCondition,
             FieldInfo[] fieldInfoArray, FieldOrderOptions[] fieldOptionsArray, TransactionCacheDb overlay) throws SQLException {
         EntityDefinition ed = getEntityDef();
 

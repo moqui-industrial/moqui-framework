@@ -142,8 +142,9 @@ public final class LlmGateway {
     }
 
     /**
-     * Request tools may only subset {request, write_ui, browse, run_service}. write-ui is accepted as write_ui.
-     * Unknown names are 400, not silently ignored.
+     * Request tools may only subset {request, write_ui, browse, find_basic, run_service, find_skill, enter_sim, pin}.
+     * write-ui is accepted as write_ui. Unknown names are 400, not silently ignored.
+     * find_basic is a legal name here; attachServletTools adds the tool only when the profile has an allow list.
      */
     public static List<String> parseTools(Object tools) {
         List<String> names = new ArrayList<>();
@@ -157,7 +158,7 @@ public final class LlmGateway {
                 if (o != null && !o.toString().isBlank()) names.add(o.toString().trim());
             }
         } else {
-            throw new LlmException("tools must be a list of request/write_ui/browse/run_service/find_skill/enter_sim",
+            throw new LlmException("tools must be a list of request/write_ui/browse/find_basic/run_service/find_skill/enter_sim/pin",
                     null, LlmFinishReason.ERROR, 400, null, null);
         }
         Set<String> seen = new LinkedHashSet<>();
@@ -165,8 +166,9 @@ public final class LlmGateway {
             String n = "write-ui".equals(raw) ? "write_ui" : raw;
             if ("run-service".equals(n)) n = "run_service";
             if (!"request".equals(n) && !"write_ui".equals(n) && !"browse".equals(n) && !"run_service".equals(n)
-                    && !"find_skill".equals(n) && !"enter_sim".equals(n))
-                throw new LlmException("tools may only subset {request, write_ui, browse, run_service, find_skill, enter_sim}",
+                    && !"find_skill".equals(n) && !"enter_sim".equals(n) && !"pin".equals(n)
+                    && !FindBasicTool.NAME.equals(n))
+                throw new LlmException("tools may only subset {request, write_ui, browse, find_basic, run_service, find_skill, enter_sim, pin}",
                         null, LlmFinishReason.ERROR, 400, null, null);
             seen.add(n);
         }
@@ -199,7 +201,9 @@ public final class LlmGateway {
         boolean wantBrowse = tools.contains("browse");
         boolean wantRunService = tools.contains("run_service");
         boolean wantFindSkill = tools.contains("find_skill") || wantBrowse || wantRunService;
-        boolean wantEnterSim = tools.contains("enter_sim") || wantBrowse || wantRunService;
+        boolean wantEnterSim = tools.contains("enter_sim");
+        boolean wantPin = tools.contains("pin") || wantFindSkill;
+        boolean wantFindBasic = tools.contains(FindBasicTool.NAME);
         if (wantRequest) {
             boolean unprefixed = profile != null && profile.allowUnprefixedRequest;
             LlmTool rt = requestToolForServlet(profile != null ? profile.allowedPaths : null, unprefixed);
@@ -207,6 +211,7 @@ public final class LlmGateway {
         }
         if (wantWriteUi && profile != null && profile.allowWriteUi) {
             WriteUiTool wt = new WriteUiTool();
+            wt.setAllowVueSfc(profile.allowVueSfc);
             if (profile.allowUnprefixedRequest && (profile.allowedEntities == null || profile.allowedEntities.isEmpty()))
                 wt.setAllowAnyAuthorizedEntity(true);
             client.tool(wt);
@@ -215,12 +220,23 @@ public final class LlmGateway {
         if (wantBrowse && profile != null && profile.allowBrowse) client.tool(LlmTool.browse());
         if (wantRunService && profile != null && profile.allowRunService) client.tool(LlmTool.runService());
         if (wantFindSkill) client.tool(LlmTool.findSkill());
-        if (wantEnterSim) client.tool(LlmTool.enterSim());
+        if (wantEnterSim && profile != null && profile.allowEnterSim) client.tool(LlmTool.enterSim());
+        if (wantPin) client.tool(LlmTool.pin());
+        if (wantFindBasic && profile != null && profile.allowedBasicEntities != null
+                && !profile.allowedBasicEntities.isEmpty())
+            client.tool(new FindBasicTool(profile.allowedBasicEntities));
+    }
+
+    public static void requireLlmGateway(ExecutionContext ec) {
+        if (ec == null || ec.getUser() == null || !ec.getUser().hasPermission("LlmGateway"))
+            throw new LlmException("User does not have permission to use the LLM gateway",
+                    null, LlmFinishReason.ERROR, 403, null, null);
     }
 
     public static LlmClientImpl prepareClient(ExecutionContext ec, Map<String, Object> body, boolean resume) {
         if (ec == null) throw new LlmException("ExecutionContext is required",
                 null, LlmFinishReason.ERROR, 500, null, null);
+        requireLlmGateway(ec);
         if (body == null) body = new LinkedHashMap<>();
         String profileName = str(body.get("profile"));
         if (profileName == null) profileName = "default";
@@ -261,8 +277,18 @@ public final class LlmGateway {
         }
 
         applyForceSkillUse(impl, body);
+        applyWriteMode(impl, body);
         applySystem(impl, body);
         appendForceSkillUseSystem(impl);
+        String session = SessionFacts.text(impl.ec);
+        String modeNote = writeModeNote(currentWriteMode(impl));
+        if (modeNote != null && !modeNote.isBlank()) {
+            if (session == null || session.isBlank()) session = modeNote;
+            else session = session + "\n" + modeNote;
+        }
+        refreshContext(impl, "session", session);
+        refreshContext(impl, "pins", PinTool.text(impl));
+        refreshContext(impl, "skill-widgets", SkillIndex.activeWidgetText(impl.ec, impl.activeSkillName));
         String user = str(body.get("user"));
         if (user != null) {
             impl.user(user);
@@ -274,7 +300,7 @@ public final class LlmGateway {
             List<LlmMessage> extra = new ArrayList<>();
             for (Object o : (List<?>) msgs) {
                 LlmMessage parsed = toMessage(o);
-                if (parsed != null) extra.add(parsed);
+                if (parsed != null && parsed.role == LlmMessage.Role.USER) extra.add(parsed);
             }
             if (!extra.isEmpty()) impl.messages(extra);
         }
@@ -313,6 +339,43 @@ public final class LlmGateway {
             Object v = impl.conversation.getAttributes().get("activeSkillName");
             if (v != null && !v.toString().isBlank()) impl.activeSkillName = v.toString();
         }
+        String bodySkill = body != null ? str(body.get("activeSkillName")) : null;
+        if (bodySkill != null) {
+            SkillIndex.SkillDoc doc = SkillIndex.getByName(impl.ec, bodySkill);
+            if (doc != null) SkillUseGate.activate(impl, doc.name);
+        }
+    }
+
+    static void applyWriteMode(LlmClientImpl impl, Map<String, Object> body) {
+        if (impl == null || impl.conversation == null || body == null || !body.containsKey("writeMode")) return;
+        String mode = canonicalWriteMode(body.get("writeMode"));
+        if (mode != null) impl.conversation.setAttribute("writeMode", mode);
+    }
+    static String currentWriteMode(LlmClientImpl impl) {
+        if (impl == null || impl.conversation == null) return null;
+        return canonicalWriteMode(impl.conversation.getAttributes().get("writeMode"));
+    }
+    static String canonicalWriteMode(Object raw) {
+        if (raw == null) return null;
+        String s = raw.toString().trim();
+        if ("script".equalsIgnoreCase(s)) return "script";
+        if ("agent".equalsIgnoreCase(s)) return "agent";
+        return null;
+    }
+    /** One session-context block naming the Assist write mode that is active for this turn. */
+    static String writeModeNote(String mode) {
+        if ("script".equals(mode)) {
+            return "writeMode=script\n"
+                    + "Script mode is active. Put the POST on the canvas: kind=openui Button "
+                    + "@Run(Mutation(\"request\", {method, path, body})), or kind=form actions with method and path. "
+                    + "A form with only submitLabel returns the values after the click; then request the write. Prefer the Mutation.";
+        }
+        if ("agent".equals(mode)) {
+            return "writeMode=agent\n"
+                    + "Agent mode is active. A submitLabel form is enough. After submitted:true, request or run_service the write. "
+                    + "For risk=confirm, wait for the click.";
+        }
+        return "";
     }
 
     static void appendForceSkillUseSystem(LlmClientImpl impl) {
@@ -329,7 +392,15 @@ public final class LlmGateway {
     static void applySystem(LlmClientImpl impl, Map<String, Object> body) {
         LlmFacadeImpl.ProfileState profile = impl != null ? impl.profile : null;
         if (profile != null && profile.systemLocation != null && !profile.systemLocation.isBlank()) {
-            String text = renderPrompt(impl.ec, profile.systemLocation, null);
+            Map<String, Object> promptCtx = new LinkedHashMap<>();
+            promptCtx.put("allowVueSfc", profile.allowVueSfc);
+            try {
+                String hints = ScreenSearchHints.text(impl.ec);
+                if (hints != null && !hints.isBlank()) promptCtx.put("searchHints", hints);
+            } catch (Throwable t) {
+                logger.warn("Search screen hints failed: {}", t.getMessage());
+            }
+            String text = renderPrompt(impl.ec, profile.systemLocation, promptCtx);
             if (text != null && !text.isBlank()) impl.system(text);
             return;
         }
@@ -339,11 +410,21 @@ public final class LlmGateway {
         if (system != null) impl.system(system);
     }
 
+    /** Replace a named context block so a resumed turn does not stack copies. */
+    static void refreshContext(LlmClientImpl impl, String source, String content) {
+        if (impl == null || source == null) return;
+        try {
+            if (impl.conversation != null) impl.conversation.removeContextBySource(source);
+            if (content != null && !content.isBlank()) impl.injectContext(source, content);
+        } catch (Throwable t) {
+            logger.warn("Context {} failed: {}", source, t.getMessage());
+        }
+    }
+
     static void injectSkills(LlmClientImpl impl, String userText) {
         if (impl == null || userText == null || userText.isBlank()) return;
         try {
-            List<SkillIndex.SkillDoc> docs = SkillIndex.retrieve(impl.ec, userText, 3);
-            impl.injectContext("skills", SkillIndex.formatInject(impl.ec, docs));
+            impl.injectContext("skills", SkillIndex.formatInjectForQuery(impl.ec, userText));
         } catch (Throwable t) {
             logger.warn("Skill inject failed: {}", t.getMessage());
         }
@@ -411,6 +492,7 @@ public final class LlmGateway {
      * Outside the single-flight 409 rule for in-flight turns.
      */
     public static Map<String, Object> cancel(ExecutionContext ec, String conversationId) {
+        requireLlmGateway(ec);
         LlmConversation conv = LlmConversationImpl.load(ec, conversationId, true);
         return cancel(conv);
     }
@@ -432,6 +514,7 @@ public final class LlmGateway {
     }
 
     public static Map<String, Object> getConversationMap(ExecutionContext ec, String conversationId) {
+        requireLlmGateway(ec);
         LlmConversation conv = LlmConversationImpl.load(ec, conversationId, true);
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("conversationId", conv.getConversationId());
@@ -451,6 +534,7 @@ public final class LlmGateway {
      * Owner's conversations, newest first. ADMIN may list all. Optional profile and purpose (attributes.purpose).
      */
     public static List<Map<String, Object>> listConversations(ExecutionContext ec, String profile, String purpose) {
+        requireLlmGateway(ec);
         List<Map<String, Object>> out = new ArrayList<>();
         if (ec == null || ec.getEntity() == null || ec.getUser() == null) return out;
         String userId = ec.getUser().getUserId();
@@ -490,6 +574,7 @@ public final class LlmGateway {
 
     /** Profiles the current user is authorized to use (AT_LLM VIEW). Names + model, never keys. */
     public static List<Map<String, Object>> listProfiles(ExecutionContext ec) {
+        requireLlmGateway(ec);
         LlmFacade facade = ec.getLlm();
         ArtifactExecutionFacade aefi = ec.getArtifactExecution();
         List<Map<String, Object>> out = new ArrayList<>();
@@ -508,7 +593,9 @@ public final class LlmGateway {
                     row.put("allowBrowse", ps.allowBrowse);
                     row.put("allowRunService", ps.allowRunService);
                     row.put("allowUnprefixedRequest", ps.allowUnprefixedRequest);
+                    row.put("allowEnterSim", ps.allowEnterSim);
                     row.put("allowClientSystem", ps.allowClientSystem);
+                    row.put("allowVueSfc", ps.allowVueSfc);
                 }
                 out.add(row);
             } catch (ArtifactAuthorizationException ignored) {
@@ -586,6 +673,8 @@ public final class LlmGateway {
         Map<String, Object> args = LlmJson.tryToMap(call.arguments);
         m.put("arguments", args != null ? args : call.arguments);
         m.put("execution", executionName(call.execution));
+        if (Boolean.TRUE.equals(call.confirm)) m.put("confirm", Boolean.TRUE);
+        if (call.risk != null && !call.risk.isBlank()) m.put("risk", call.risk);
         m.put("summary", LlmTrace.summarizeCall(call.name, args != null ? args : call.arguments));
         return m;
     }

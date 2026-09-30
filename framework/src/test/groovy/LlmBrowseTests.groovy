@@ -16,7 +16,10 @@ import org.moqui.Moqui
 import org.moqui.context.ExecutionContext
 import org.moqui.impl.llm.BrowseTool
 import org.moqui.impl.llm.LlmGateway
+import org.moqui.impl.llm.ScreenSearchHints
+import org.moqui.impl.llm.SessionFacts
 import org.moqui.impl.llm.SkillIndex
+import org.moqui.impl.llm.ToolResultTrim
 import spock.lang.IgnoreIf
 import spock.lang.Shared
 import spock.lang.Specification
@@ -175,6 +178,21 @@ class LlmBrowseTests extends Specification {
         out.leaf.inParameters.contains("newPassword")
         out.leaf.form == "CreateUserAccount"
         out.leaf.formFields.contains("username")
+        out.screenPath == "/qapps/system/Security/UserAccount/UserAccountList"
+        out.hint.toString().contains("not a catalog")
+        ((List) out.children).isEmpty()
+    }
+
+    def "actions path is a transition leaf and tells the model to browse the parent screen"() {
+        when:
+        Map out = (Map) new BrowseTool().execute(
+                [path: "/qapps/system/Security/UserAccount/UserAccountList/actions", match: "Item|Part"], ec)
+
+        then:
+        out.kind == "transition"
+        ((List) out.children).isEmpty()
+        out.screenPath == "/qapps/system/Security/UserAccount/UserAccountList"
+        out.hint.toString().contains("Do not retry match")
     }
 
     def "UserAccountList does not list the automatic actions transition"() {
@@ -254,6 +272,74 @@ class LlmBrowseTests extends Specification {
         hit.jsonPath.toString() == "/apps/marble/Asset/Asset/FindAsset/actions/ListAssets"
     }
 
+    def "search hints name QuickSearch and mantle Search actions this user can view"() {
+        when:
+        String text = ScreenSearchHints.text(ec)
+        List mounts = ScreenSearchHints.find(ec)
+        List lines = text.split("\n") as List
+        List searchMounts = mounts.findAll { bareSearchPath(it.actionsPath) }
+        String searchOnly = ScreenSearchHints.render([
+                new ScreenSearchHints.Mount(false, false, "/apps/hm/Search", "/apps/hm/Search/actions")])
+
+        then:
+        text != null
+        text.contains("/apps/marble/QuickSearch/actions")
+        text.contains("/apps/hm/Search/actions")
+        text.contains("/apps/hmadmin/Search/actions")
+        text.contains("/apps/PopcAdmin/Search/actions")
+        text.contains("/apps/PopcAdmin/QuickSearch/actions")
+        text.contains("queryString")
+        text.contains("documentList")
+        text.contains("orderHeader")
+        !text.contains("lookup#ById")
+        !text.contains("/Catalog/Search")
+        mounts.every { it.actionsPath.startsWith("/apps/") && it.actionsPath.endsWith("/actions") }
+        mounts.every { !it.screenPath.contains("/Catalog/Search") }
+        searchMounts*.actionsPath.containsAll([
+                "/apps/hm/Search/actions",
+                "/apps/hmadmin/Search/actions",
+                "/apps/PopcAdmin/Search/actions"])
+        searchMounts.every { m ->
+            String line = lines.find { it.contains(m.actionsPath) }
+            line != null && line.contains("queryString") && !line.contains("lookupId") && line.startsWith("- Search:")
+        }
+        lines.find { it.contains("/apps/PopcAdmin/QuickLookup/actions") }?.contains("lookupId")
+
+        searchOnly.contains("/apps/hm/Search/actions")
+        searchOnly.contains("queryString")
+        searchOnly.contains("documentList")
+        !searchOnly.contains("lookupId")
+        !searchOnly.contains("orderHeader")
+
+        ScreenSearchHints.isMantleSearchActions(ec, ["apps", "hm", "Search", "actions"])
+        ScreenSearchHints.isMantleSearchActions(ec, ["apps", "hmadmin", "Search", "actions"])
+        ScreenSearchHints.isMantleSearchActions(ec, ["apps", "PopcAdmin", "Search", "actions"])
+        !ScreenSearchHints.isMantleSearchActions(ec, ["apps", "PopcAdmin", "Catalog", "Search", "actions"])
+        !ScreenSearchHints.isMantleSearchActions(ec, ["apps", "marble", "QuickSearch", "actions"])
+        !ScreenSearchHints.isMantleSearchActions(ec, ["apps", "PopcAdmin", "Search", "actions", "SearchResults"])
+        !ToolResultTrim.isSearchActionsPath(["apps", "hm", "Search", "actions"])
+        !ToolResultTrim.isSearchActionsPath(["apps", "PopcAdmin", "Catalog", "Search", "actions"])
+        ToolResultTrim.isSearchActionsPath(["apps", "marble", "QuickSearch", "actions"])
+        ToolResultTrim.isSearchActionsPath(["apps", "PopcAdmin", "QuickLookup", "actions"])
+    }
+
+    private static boolean bareSearchPath(String path) {
+        if (path == null) return false
+        String[] parts = path.split("/")
+        return parts.length >= 2 && parts[parts.length - 2] == "Search"
+    }
+
+    def "session facts are this user and do not list permissions"() {
+        when:
+        String text = SessionFacts.text(ec)
+
+        then:
+        text.contains("userId=")
+        text.contains("partyId=")
+        !text.toLowerCase().contains("permission")
+        !text.contains("ADMIN")
+    }
+
     def "AssistSystem documents screen-first ladder and find-form jsonPath"() {
         when:
         def f = new File("../runtime/base-component/tools/prompt/AssistSystem.ftl")
@@ -266,7 +352,14 @@ class LlmBrowseTests extends Specification {
         text.contains("/rest/s1")
         text.contains("/rest/e1")
         text.contains("Find forms")
+        text.contains("QuickSearch, Search, or QuickLookup")
         text.contains("kind=openui")
+        text.contains("adjust: true")
+        text.contains("Do not browse")
+        text.contains("`kind` `transition`")
+        text.contains("YYYY-MM-DD HH:mm")
+        text.contains("writeMode")
+        text.contains("*_display")
         text.contains("requireParameters")
         text.contains("AT_SERVICE")
         text.indexOf("/qapps") < text.indexOf("/rest/s1")
@@ -285,7 +378,25 @@ class LlmBrowseTests extends Specification {
         sys.contains("Mermaid(")
         sys.contains("DatePeriod(")
         sys.contains("kind=openui")
+        sys.contains("YYYY-MM-DD HH:mm")
+        sys.contains("writeMode")
         !sys.contains("<#include")
+        !sys.contains("kind=vue-sfc")
+        !sys.contains("module.exports")
+    }
+
+    def "AssistSystem includes VueSfc prompt only when allowVueSfc"() {
+        when:
+        String off = LlmGateway.renderPrompt(ec, "component://tools/prompt/AssistSystem.ftl", [allowVueSfc: false])
+        String on = LlmGateway.renderPrompt(ec, "component://tools/prompt/AssistSystem.ftl", [allowVueSfc: true])
+        String openUi = new File("../runtime/base-component/tools/prompt/OpenUiLang.prompt.txt").text
+
+        then:
+        off != null && !off.contains("kind=vue-sfc")
+        on.contains("kind=vue-sfc")
+        on.contains("module.exports")
+        on.contains("moquiSessionToken")
+        !openUi.contains("vue-sfc")
     }
 
     def "OpenUI spec component names appear in OpenUiLang prompt"() {

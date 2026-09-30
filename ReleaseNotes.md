@@ -7,6 +7,7 @@
 - TransactionCacheDb, a multi-tx alternative to TransactionCache that uses an H2 in-memory database overlay
 - LlmClient / LlmFacade OpenAI-compatible LLM client (see details below)
 - Assist Screen: AI assistant with chat on the left and screen canvas on the right; AI generates forms, user clicks submit; if no skill exists for requested action, AI figures it out in a sim and writes a skill, then validates the skill on first use (TransactionCacheDb is part of the sim isolation)
+- Assist Adjust: on a canvas, describe what to change or what is wrong. That note, the current screen, and any render errors are sent back so the model revises the write_ui output.
 
 #### LlmClient and LlmFacade
 
@@ -29,10 +30,17 @@ def result = ec.llm.getDefault()
 - Artifact type `AT_LLM` (authz and tarpit enabled). Seed grants ADMIN `AUTHZT_ALWAYS` on group `LlmProfiles`
   with `inheritAuthz=N` so that does not skip later service/screen/entity checks. Servlet access is permission
   `LlmGateway` (ADMIN by default).
-- Agent loop: server tool `request` (method + path through ScreenRender on the same thread, authz and tarpit ON)
-  and client tool `write_ui` (schemaVersion 4 openui Lang or vue-sfc yield; the server never submits). Optional typed
-  `LlmTool.service()`. Servlet may also attach `browse` (authz-filtered catalog) and `run_service`
-  (generic service call) when the profile allows them.
+- Agent loop: server tool `request` (method + path through ScreenRender on the same thread, authz and tarpit ON;
+  login-switch fields are stripped from the tool body) and client tool `write_ui` (schemaVersion 4 OpenUI Lang;
+  `kind=vue-sfc` only when the profile sets `allow-vue-sfc`, default false). `run_service` calls only services with
+  `authenticate="true"`. A sim-proposed skill cannot replace a shipped or active human/world skill, and it is promoted
+  only after it is selected and a later server-side write succeeds. On the world rim, `run_service` and mutating
+  `request` follow the active skill's `risk`: no skill refuses them, `reversible` runs, and `confirm` or
+  `irreversible` waits for a click. Sim does not. Overlay SQL uses H2 column names (`VALUE` is `THE_VALUE`).
+  Chart.js, mermaid, SimpleMDE, marked, DOMPurify, highlight.js, and CKEditor 4 standard-all load from `/libs`.
+  A2A `Part.url` is only an existing readable `dbresource://` or `content://`. `SendStreamingMessage` pings during
+  the provider wait. Sim refuses raw JDBC, service jobs, outbound HTTP
+  that does not go through RestClient, file and content writes, and print. A2A is on only when `a2a_enabled` is `true`.
 - Managed servlet at `/llm/*`. Not a provider-key proxy (keys stay on the profile). Service REST wrappers at
   `/rest/s1/moqui/llm/...` for sync JSON only; do not SSE through Service REST.
 
@@ -97,6 +105,8 @@ Other production notes:
   attach the `request` tool. Internal `LlmTool.request()` with no prefixes still means any path the user
   is authorized to hit. Profile `allow-unprefixed-request="true"` (Assist) attaches that unprefixed tool;
   operators may still add `allowed-path` prefixes to **narrow** it.
+- `text-fts` field type: `LIKE` / `NOT LIKE` uses the database `fts-style` (H2 native full text, Postgres `tsvector`, MySQL `FULLTEXT`; other databases keep SQL `LIKE`). `LlmSkill` description and body use it for `find_skill`. See `framework/plans/DbFullTextSearch.md`.
+- Assist tool results include message-facade errors, warnings, and field errors on success and failure. Large results are shortened by whole rows and keys. QuickSearch and QuickLookup `actions` responses keep the search and lookup maps. The confirm panel shows the call parameters (password-like values hidden). Each turn the prompt gets this user's party, locale, time zone, and active organization, plus QuickSearch/QuickLookup `actions` paths for screens that user can view (omitted when none are mounted). `pin` remembers ids already returned by a screen. A failed write on the active skill records `LlmSkillUse` and an `LlmLesson`, which is injected with that skill. A 200 that still carries errors does not promote a skill.
 - Assist **Force Skill Use** toggle (off by default): when on, the agent loop refuses
   `browse` / `request` / `run_service` / `write_ui` until the model calls `find_skill` with
   `select` (exact skill name) or `enter_sim`. Refusals are tool results with instructions; the

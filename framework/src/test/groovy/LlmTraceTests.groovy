@@ -22,6 +22,25 @@ import spock.lang.Specification
 
 class LlmTraceTests extends Specification {
 
+    def "unredacted dumps are off unless llm_trace_dump is true"() {
+        given:
+        String prev = System.getProperty("llm_trace_dump")
+
+        when:
+        System.clearProperty("llm_trace_dump")
+        then:
+        !LlmTrace.isDumpEnabled()
+
+        when:
+        System.setProperty("llm_trace_dump", "true")
+        then:
+        LlmTrace.isDumpEnabled()
+
+        cleanup:
+        if (prev == null) System.clearProperty("llm_trace_dump")
+        else System.setProperty("llm_trace_dump", prev)
+    }
+
     def "browse call shows path and match and omits default depth"() {
         expect:
         LlmTrace.summarizeCall("browse", [path: "/qapps/system", match: "UserAccount"]) ==
@@ -123,6 +142,12 @@ class LlmTraceTests extends Specification {
                 .contains("notSelected")
         LlmTrace.summarizeResult("write_ui", [submitted: true, button: "submit"]).contains("submitted")
         LlmTrace.summarizeResult("write_ui", [submitted: false]).contains("not submitted")
+        LlmTrace.summarizeResult("write_ui", [submitted: false, adjust: true,
+                notices: [[message: "OpenUI program has no root."]]]).contains("not submitted adjust")
+        LlmTrace.summarizeResult("write_ui", [submitted: false, adjust: true,
+                notices: [[message: "OpenUI program has no root."]]]).contains("notices=1")
+        !LlmTrace.summarizeResult("write_ui", [submitted: false, adjust: true,
+                notices: [[message: "OpenUI program has no root."]]]).contains("OpenUI program has no root")
     }
 
     def "prompt preview is 60 chars of head and tail; short prompt has no tail"() {

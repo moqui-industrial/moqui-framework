@@ -636,6 +636,16 @@ along with this software (see the LICENSE.md file). If not, see
                     <xs:element name="allowed-entity" minOccurs="0" maxOccurs="unbounded"><xs:complexType>
                         <xs:attribute name="name" type="xs:string" use="required"/>
                     </xs:complexType></xs:element>
+                    <xs:element name="allowed-basic-entity" minOccurs="0" maxOccurs="unbounded"><xs:complexType>
+                        <xs:annotation><xs:documentation>Allow-list for the find_basic tool. package and entity are
+                            full-string regexes (Java String.matches) against the entity package name and the short
+                            entity name. package "moqui.basic" matches that package only, not moqui.basic.email or
+                            moqui.basic.print. Omit entity to allow every entity in the matched package. An element
+                            with neither attribute allows nothing. find_basic reads these with artifact authz off.
+                        </xs:documentation></xs:annotation>
+                        <xs:attribute name="package" type="xs:string"/>
+                        <xs:attribute name="entity" type="xs:string"/>
+                    </xs:complexType></xs:element>
                 </xs:sequence>
                 <xs:attribute name="name" type="xs:string" use="required"/>
                 <xs:attribute name="protocol" type="xs:string" default="org.moqui.impl.llm.OpenAiCompatProtocol"/>
@@ -652,7 +662,7 @@ along with this software (see the LICENSE.md file). If not, see
                     </xs:restriction></xs:simpleType>
                 </xs:attribute>
                 <xs:attribute name="allow-write-ui" type="boolean-expandable" default="false"/>
-                <xs:attribute name="allow-client-system" type="boolean-expandable" default="true">
+                <xs:attribute name="allow-client-system" type="boolean-expandable" default="false">
                     <xs:annotation><xs:documentation>If false, servlet/gateway ignores body.system (Assist profile).
                     </xs:documentation></xs:annotation>
                 </xs:attribute>
@@ -667,6 +677,16 @@ along with this software (see the LICENSE.md file). If not, see
                 <xs:attribute name="allow-unprefixed-request" type="boolean-expandable" default="false">
                     <xs:annotation><xs:documentation>If true and allowed-path is empty, attach request with no prefixes
                         (any path the current user is authorized to hit). Default profile stays fail-closed.
+                    </xs:documentation></xs:annotation>
+                </xs:attribute>
+                <xs:attribute name="allow-vue-sfc" type="boolean-expandable" default="false">
+                    <xs:annotation><xs:documentation>If true, write_ui may yield kind=vue-sfc. Default false:
+                        the server drops that kind. Vue SFC script runs in the signed-in browser session.
+                    </xs:documentation></xs:annotation>
+                </xs:attribute>
+                <xs:attribute name="allow-enter-sim" type="boolean-expandable" default="false">
+                    <xs:annotation><xs:documentation>Attach enter_sim when the client requests it. Nested sim copies
+                        the parent's request/browse/run_service tools; it does not grant unprefixed request on its own.
                     </xs:documentation></xs:annotation>
                 </xs:attribute>
                 <xs:attribute name="system-location" type="xs:string">
@@ -883,6 +903,26 @@ along with this software (see the LICENSE.md file). If not, see
                     <xs:enumeration value="ansi"/>
                     <xs:enumeration value="ansi-no-parenthesis"/>
                 </xs:restriction></xs:simpleType>
+            </xs:attribute>
+            <xs:attribute name="fts-style" default="none">
+                <xs:annotation><xs:documentation>
+                    How LIKE / NOT LIKE on a text-fts field is evaluated. none keeps SQL LIKE.
+                    h2-native, postgres-tsvector, mysql-fulltext, mssql-contains, and oracle-text use that
+                    database's full-text index. A missing index falls back to SQL LIKE.
+                </xs:documentation></xs:annotation>
+                <xs:simpleType><xs:restriction base="xs:token">
+                    <xs:enumeration value="none"/>
+                    <xs:enumeration value="h2-native"/>
+                    <xs:enumeration value="postgres-tsvector"/>
+                    <xs:enumeration value="mysql-fulltext"/>
+                    <xs:enumeration value="mssql-contains"/>
+                    <xs:enumeration value="oracle-text"/>
+                </xs:restriction></xs:simpleType>
+            </xs:attribute>
+            <xs:attribute name="fts-config" default="english" type="xs:token">
+                <xs:annotation><xs:documentation>
+                    Postgres text search configuration passed to to_tsvector / plainto_tsquery. Other fts-style values ignore it.
+                </xs:documentation></xs:annotation>
             </xs:attribute>
             <xs:attribute name="offset-style" default="fetch">
                 <xs:simpleType><xs:restriction base="xs:token">

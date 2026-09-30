@@ -41,6 +41,8 @@ public interface LlmTool {
     static LlmTool runService() { return create("org.moqui.impl.llm.RunServiceTool"); }
     static LlmTool findSkill() { return create("org.moqui.impl.llm.FindSkillTool"); }
     static LlmTool enterSim() { return create("org.moqui.impl.llm.EnterSimTool"); }
+    static LlmTool pin() { return create("org.moqui.impl.llm.PinTool"); }
+    static LlmTool findBasic() { return create("org.moqui.impl.llm.FindBasicTool"); }
     static LlmTool service(String serviceName) {
         return create("org.moqui.impl.llm.ServiceCallTool", new Class<?>[] { String.class, String.class },
                 serviceName, null);

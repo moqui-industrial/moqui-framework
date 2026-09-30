@@ -15,6 +15,7 @@ package org.moqui.impl.llm;
 
 import org.moqui.context.ArtifactAuthorizationException;
 import org.moqui.context.ArtifactTarpitException;
+import org.moqui.context.TransactionFacade;
 import org.moqui.entity.EntityValue;
 import org.moqui.impl.context.ExecutionContextImpl;
 import org.moqui.llm.LlmException;
@@ -29,6 +30,11 @@ import org.moqui.llm.LlmTool;
 import org.moqui.llm.LlmToolCall;
 import org.moqui.llm.LlmToolResult;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import jakarta.transaction.Status;
+
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -39,6 +45,7 @@ import java.util.Map;
  * Invalid JSON and unknown names become tool error results, not exceptions.
  */
 final class LlmAgentLoop {
+    private static final Logger logger = LoggerFactory.getLogger(LlmAgentLoop.class);
     static final String CLIENT_UNAVAILABLE = "client tool not available in this context";
     static final String UNKNOWN_TOOL = "unknown tool: ";
     static final String MALFORMED = "malformed arguments: ";
@@ -182,18 +189,28 @@ final class LlmAgentLoop {
             }
 
             if (!serverCalls.isEmpty() && listener != null) listener.onPing();
-            for (LlmToolCall call : serverCalls) {
+            for (int serverIndex = 0; serverIndex < serverCalls.size(); serverIndex++) {
+                LlmToolCall call = serverCalls.get(serverIndex);
                 client.throwIfCancelled();
+                SkillRiskGate.Decision decision = SkillRiskGate.decide(client, call);
+                if (decision.action == SkillRiskGate.Decision.YIELD) {
+                    for (int rest = serverIndex + 1; rest < serverCalls.size(); rest++)
+                        recordServerResult(working, roundResults, serverCalls.get(rest), SkillRiskGate.deferred(serverCalls.get(rest)));
+                    for (LlmToolCall later : clientCalls)
+                        recordServerResult(working, roundResults, later, SkillRiskGate.deferred(later));
+                    LlmToolCall pending = call.copy();
+                    pending.confirm = Boolean.TRUE;
+                    pending.risk = decision.risk;
+                    pending.execution = LlmTool.Execution.SERVER;
+                    LlmTrace.logToolCall(pending.name, pending.arguments);
+                    if (listener != null) listener.onToolCall(pending, LlmTool.Execution.SERVER);
+                    return yieldPending(result, start, roundResults, pending);
+                }
                 LlmTrace.logToolCall(call.name, call.arguments);
                 if (listener != null) listener.onToolCall(call, LlmTool.Execution.SERVER);
-                Object executed = executeOne(call);
-                client.throwIfCancelled();
-                Object stored = client.truncateResult(executed);
-                roundResults.add(new LlmToolResult(call.id, call.name, stored));
-                appendTool(working, call.id, call.name, stored);
-                noteSkillLifecycle(call.name, call.arguments, stored);
-                LlmTrace.logToolResult(call.name, stored);
-                if (listener != null) listener.onToolResult(call, stored, LlmTool.Execution.SERVER);
+                Object executed = decision.action == SkillRiskGate.Decision.REFUSE
+                        ? decision.refusal : executeOne(call, false);
+                recordServerResult(working, roundResults, call, executed);
             }
 
             if (!clientCalls.isEmpty()) {
@@ -233,6 +250,25 @@ final class LlmAgentLoop {
                         Map<String, Object> enriched = tool.enrichForClient(args, client.ec);
                         if (enriched != null && WriteUiTool.NAME.equals(call.name))
                             enriched = WriteUiTool.applyWriteThrough(enriched, client.conversation);
+                        if (enriched != null && WriteUiTool.NAME.equals(call.name)) {
+                            List<String> unbound = WriteUiTool.unboundActionFields(enriched);
+                            if (!unbound.isEmpty()) {
+                                Map<String, Object> err = new LinkedHashMap<>();
+                                err.put("error", "unbound_fields");
+                                err.put("instruction", "These bodyFromFields names are not fields, so the click does not send them: "
+                                        + unbound + ". Add each as a field with defaultValue. A display field is not a parameter.");
+                                err.put("fields", unbound);
+                                LlmTrace.logToolCall(call.name, call.arguments);
+                                LlmTrace.logToolResult(call.name, err);
+                                if (listener != null) {
+                                    listener.onToolCall(copy, LlmTool.Execution.CLIENT);
+                                    listener.onToolResult(copy, err, LlmTool.Execution.CLIENT);
+                                }
+                                roundResults.add(new LlmToolResult(call.id, call.name, err));
+                                appendTool(working, call.id, call.name, err);
+                                continue;
+                            }
+                        }
                         if (enriched != null) copy.arguments = LlmJson.toJson(enriched);
                     }
                     pending.add(copy);
@@ -242,23 +278,7 @@ final class LlmAgentLoop {
                     LlmTrace.logToolCall(copy.name, copy.arguments);
                     if (listener != null) listener.onToolCall(copy, LlmTool.Execution.CLIENT);
                 }
-                if (client.conversation != null) {
-                    client.conversation.persistIsolated(() -> {
-                        client.conversation.setPendingToolCallsInternal(pending);
-                        client.conversation.setStatusInternal(LlmConversationImpl.STATUS_YIELDED);
-                    });
-                    client.throwIfCancelled();
-                }
-                LlmResponse r = client.toResponse(result, LlmFinishReason.TOOL_CALLS, start);
-                r.yielded = true;
-                r.httpStatus = 202;
-                r.pendingToolCalls = pending;
-                r.toolResults = roundResults;
-                if (listener != null) {
-                    listener.onYield(pending);
-                    listener.onComplete(r);
-                }
-                return r;
+                return yieldPending(result, start, roundResults, pending);
             }
         }
 
@@ -327,21 +347,102 @@ final class LlmAgentLoop {
         }
     }
 
-    private Object executeOne(LlmToolCall call) {
+    private void recordServerResult(List<LlmMessage> working, List<LlmToolResult> roundResults,
+            LlmToolCall call, Object executed) {
+        client.throwIfCancelled();
+        Object stored = client.truncateResult(executed);
+        roundResults.add(new LlmToolResult(call.id, call.name, stored));
+        appendTool(working, call.id, call.name, stored);
+        noteSkillLifecycle(call.name, call.arguments, stored);
+        LlmTrace.logToolResult(call.name, stored);
+        if (listener != null) listener.onToolResult(call, stored, LlmTool.Execution.SERVER);
+    }
+
+    private LlmResponse yieldPending(ProtocolResult result, long start, List<LlmToolResult> roundResults,
+            Object pendingCalls) {
+        List<LlmToolCall> pending = new ArrayList<>();
+        if (pendingCalls instanceof LlmToolCall) pending.add((LlmToolCall) pendingCalls);
+        else if (pendingCalls instanceof List) {
+            for (Object item : (List<?>) pendingCalls) {
+                if (item instanceof LlmToolCall) pending.add((LlmToolCall) item);
+            }
+        }
+        if (client.conversation != null) {
+            client.conversation.persistIsolated(() -> {
+                client.conversation.setPendingToolCallsInternal(pending);
+                client.conversation.setStatusInternal(LlmConversationImpl.STATUS_YIELDED);
+            });
+            client.throwIfCancelled();
+        }
+        LlmResponse r = client.toResponse(result, LlmFinishReason.TOOL_CALLS, start);
+        r.yielded = true;
+        r.httpStatus = 202;
+        r.pendingToolCalls = pending;
+        r.toolResults = roundResults;
+        if (listener != null) {
+            listener.onYield(pending);
+            listener.onComplete(r);
+        }
+        return r;
+    }
+
+    Object executeOne(LlmToolCall call, boolean confirmed) {
         if (!SkillUseGate.allowed(client, call.name)) return SkillUseGate.refusal();
+        if (!confirmed) {
+            SkillRiskGate.Decision decision = SkillRiskGate.decide(client, call);
+            if (decision.action == SkillRiskGate.Decision.REFUSE) return decision.refusal;
+            if (decision.action == SkillRiskGate.Decision.YIELD)
+                return SkillRiskGate.notConfirmed();
+        }
         LlmTool tool = client.findTool(call.name);
         if (tool == null) return errorMap(UNKNOWN_TOOL + call.name);
         Map<String, Object> args = LlmJson.tryToMap(call.arguments);
         if (args == null) return errorMap(MALFORMED + call.arguments);
         LlmClientImpl prev = CURRENT_CLIENT.get();
         CURRENT_CLIENT.set(client);
+        TransactionFacade tf = client.ec != null ? client.ec.getTransaction() : null;
+        boolean suspended = false;
+        boolean failed = false;
         try {
-            return tool.execute(args, client.ec);
+            // The conversation transaction must not join the tool. A service that did not begin
+            // the current transaction only setRollbackOnly, which then blocks saving the tool result.
+            if (tf != null && tf.isTransactionInPlace()) suspended = tf.suspend();
+            try {
+                return tool.execute(args, client.ec);
+            } catch (Throwable t) {
+                failed = true;
+                return errorMap(t.getMessage() != null ? t.getMessage() : t.getClass().getSimpleName());
+            } finally {
+                closeToolTransaction(tf, failed);
+            }
         } catch (Throwable t) {
             return errorMap(t.getMessage() != null ? t.getMessage() : t.getClass().getSimpleName());
         } finally {
+            if (suspended && tf != null) {
+                try { tf.resume(); }
+                catch (Throwable t) { logger.error("Error resuming transaction after tool", t); }
+            }
             if (prev != null) CURRENT_CLIENT.set(prev);
             else CURRENT_CLIENT.remove();
+        }
+    }
+
+    /** Close a transaction the tool left open. A failure rolls it back. A success commits it. */
+    static void closeToolTransaction(TransactionFacade tf, boolean failed) {
+        if (tf == null) return;
+        try {
+            if (!tf.isTransactionInPlace()) return;
+            int status = tf.getStatus();
+            if (status == Status.STATUS_MARKED_ROLLBACK || failed) {
+                tf.rollback("tool transaction", null);
+            } else if (status == Status.STATUS_ACTIVE) {
+                tf.commit();
+            }
+        } catch (Throwable t) {
+            logger.error("Error closing tool transaction", t);
+            try {
+                if (tf.isTransactionInPlace()) tf.rollback("tool transaction close failed", t);
+            } catch (Throwable ignored) { }
         }
     }
 
@@ -352,19 +453,26 @@ final class LlmAgentLoop {
         }
         List<LlmToolCall> pending = new ArrayList<>(conv.getPendingClientToolCalls());
         List<LlmToolResult> results = client.resumeToolResults;
+        java.util.Set<String> pendingIds = new java.util.LinkedHashSet<>();
+        for (LlmToolCall pendingCall : pending) {
+            if (pendingCall != null && pendingCall.id != null) pendingIds.add(pendingCall.id);
+        }
         java.util.Set<String> seen = new java.util.LinkedHashSet<>();
         for (LlmToolResult tr : results) {
             if (tr == null) continue;
             String id = tr.toolCallId;
-            conv.appendInternal(LlmMessage.tool(id, tr.name, contentText(tr.content)));
-            if (id != null) seen.add(id);
-            noteSkillLifecycle(tr.name, null, tr.content);
-            noteResumeEmit(id, tr.name, tr.content);
+            if (id == null || !pendingIds.contains(id)) continue;
+            LlmToolCall pendingCall = pendingCallById(pending, id);
+            Object content = resumeContent(pendingCall, tr.content);
+            conv.appendInternal(LlmMessage.tool(id, tr.name, contentText(content)));
+            seen.add(id);
+            noteResumeEmit(id, tr.name, content);
         }
         for (LlmToolCall pendingCall : pending) {
             if (pendingCall == null || pendingCall.id == null || seen.contains(pendingCall.id)) continue;
-            Map<String, Object> missing = errorMap("client tool result missing");
-            conv.appendInternal(LlmMessage.tool(pendingCall.id, pendingCall.name, LlmJson.toJson(missing)));
+            Object missing = Boolean.TRUE.equals(pendingCall.confirm)
+                    ? SkillRiskGate.notConfirmed() : errorMap("client tool result missing");
+            conv.appendInternal(LlmMessage.tool(pendingCall.id, pendingCall.name, contentText(missing)));
             noteResumeEmit(pendingCall.id, pendingCall.name, missing);
         }
         conv.setPendingToolCallsInternal(null);
@@ -374,10 +482,25 @@ final class LlmAgentLoop {
         if (!client.hasResumeResults() || working == null) return;
         for (LlmToolResult tr : client.resumeToolResults) {
             if (tr == null) continue;
-            working.add(LlmMessage.tool(tr.toolCallId, tr.name, contentText(tr.content)));
-            noteSkillLifecycle(tr.name, null, tr.content);
-            noteResumeEmit(tr.toolCallId, tr.name, tr.content);
+            Object content = resumeContent(null, tr.content);
+            working.add(LlmMessage.tool(tr.toolCallId, tr.name, contentText(content)));
+            noteResumeEmit(tr.toolCallId, tr.name, content);
         }
+    }
+
+    private Object resumeContent(LlmToolCall pendingCall, Object content) {
+        if (pendingCall == null || !Boolean.TRUE.equals(pendingCall.confirm)) return content;
+        if (!SkillRiskGate.confirmed(content)) return SkillRiskGate.notConfirmed();
+        Object executed = executeOne(pendingCall, true);
+        noteSkillLifecycle(pendingCall.name, pendingCall.arguments, executed);
+        return client.truncateResult(executed);
+    }
+
+    private static LlmToolCall pendingCallById(List<LlmToolCall> pending, String id) {
+        for (LlmToolCall call : pending) {
+            if (call != null && id.equals(call.id)) return call;
+        }
+        return null;
     }
 
     private void noteResumeEmit(String id, String name, Object content) {
@@ -407,14 +530,96 @@ final class LlmAgentLoop {
     }
 
     private void noteSkillLifecycle(String toolName, String argumentsJson, Object stored) {
-        if (stored instanceof Map) {
-            Map<?, ?> m = (Map<?, ?>) stored;
-            if ("enter_sim".equals(toolName)) {
-                Object n = m.get("proposedSkillName");
-                if (n != null && !n.toString().isBlank()) rememberProposed(n.toString());
-            }
-            if (isWorldWriteSuccess(toolName, argumentsJson, m)) maybeAdmit();
+        if (!(stored instanceof Map)) return;
+        Map<?, ?> m = (Map<?, ?>) stored;
+        if ("enter_sim".equals(toolName)) {
+            Object n = m.get("proposedSkillName");
+            if (n != null && !n.toString().isBlank()) rememberProposed(n.toString());
         }
+        if ("write_ui".equals(toolName)) {
+            if (isWorldWriteSuccess(toolName, argumentsJson, m)) maybeAdmit();
+            return;
+        }
+        if (!executedWrite(toolName, argumentsJson, m)) return;
+        boolean sim = client.ec instanceof ExecutionContextImpl && ((ExecutionContextImpl) client.ec).simSession;
+        boolean callOk = callSucceeded(toolName, m);
+        String skill = client.activeSkillName;
+        if (sim) {
+            if (!callOk && skill != null && !skill.isBlank())
+                SkillIndex.recordOutcomeInTx(client.ec, skill, "sim", "fail",
+                        failureNotes(toolName, m), client.convId());
+            return;
+        }
+        if (callOk && !ToolResultTrim.hasErrorMessages(m)) {
+            if (skill != null && !skill.isBlank() && !skill.equals(proposedName()))
+                SkillIndex.recordOutcomeInTx(client.ec, skill, "world", "pass", null, client.convId());
+            else maybeAdmit();
+            return;
+        }
+        if (skill == null || skill.isBlank()) return;
+        SkillIndex.recordOutcomeInTx(client.ec, skill, "world", "fail",
+                failureNotes(toolName, m), client.convId());
+    }
+
+    private String proposedName() {
+        String proposed = client.pendingProposedSkillName;
+        if ((proposed == null || proposed.isBlank()) && client.conversation != null) {
+            Object v = client.conversation.getAttributes().get("proposedSkillName");
+            if (v != null) proposed = v.toString();
+        }
+        return proposed;
+    }
+
+    private static boolean executedWrite(String toolName, String argumentsJson, Map<?, ?> stored) {
+        if (stored == null) return false;
+        Object err = stored.get("error");
+        if (err != null) {
+            String code = err.toString();
+            if (SkillRiskGate.NOT_CONFIRMED.equals(code) || SkillRiskGate.DEFERRED.equals(code)
+                    || SkillUseGate.ERROR.equals(code)) return false;
+        }
+        if ("run_service".equals(toolName)) return true;
+        if (!"request".equals(toolName)) return false;
+        Map<String, Object> args = LlmJson.tryToMap(argumentsJson);
+        String method = args != null && args.get("method") != null ? args.get("method").toString() : null;
+        if (method == null) return false;
+        String mu = method.trim().toUpperCase(java.util.Locale.ROOT);
+        return !mu.isEmpty() && !"GET".equals(mu) && !"HEAD".equals(mu);
+    }
+
+    static String failureNotes(String toolName, Map<?, ?> stored) {
+        StringBuilder sb = new StringBuilder();
+        if (toolName != null) sb.append(toolName);
+        if (stored.get("status") != null) sb.append(" status=").append(stored.get("status"));
+        if (stored.get("serviceName") != null) sb.append(' ').append(stored.get("serviceName"));
+        appendNote(sb, stored.get("error"));
+        appendNote(sb, stored.get("text"));
+        Object messages = stored.get("messages");
+        if (messages instanceof Map) {
+            Map<?, ?> box = (Map<?, ?>) messages;
+            Object errors = box.get("errors");
+            if (errors instanceof List) {
+                for (Object line : (List<?>) errors) appendNote(sb, line);
+            }
+            Object validation = box.get("validationErrors");
+            if (validation instanceof List) {
+                for (Object row : (List<?>) validation) {
+                    if (!(row instanceof Map)) continue;
+                    Map<?, ?> ve = (Map<?, ?>) row;
+                    appendNote(sb, "field " + ve.get("field") + ": " + ve.get("message"));
+                }
+            }
+        }
+        String text = sb.toString().trim();
+        return text.length() > 800 ? text.substring(0, 800) : text;
+    }
+
+    private static void appendNote(StringBuilder sb, Object value) {
+        if (value == null) return;
+        String text = value.toString().trim();
+        if (text.isEmpty()) return;
+        if (sb.length() > 0) sb.append('\n');
+        sb.append(text);
     }
 
     private void rememberProposed(String skillName) {
@@ -429,16 +634,32 @@ final class LlmAgentLoop {
             if (v != null) name = v.toString();
         }
         if (name == null || name.isBlank()) return;
+        String active = client.activeSkillName;
+        if (active == null || active.isBlank() || !active.equals(name)) return;
         EntityValue admitted = SkillIndex.admitWorldPassInTx(client.ec, name);
         if (admitted == null) return;
         client.pendingProposedSkillName = null;
         if (client.conversation != null) client.conversation.setAttribute("proposedSkillName", null);
     }
 
+    /** True when the tool returned a success payload, including inside sim. Error messages count as failure. */
+    private static boolean callSucceeded(String toolName, Map<?, ?> stored) {
+        if (stored == null || stored.get("error") != null) return false;
+        if (ToolResultTrim.hasErrorMessages(stored)) return false;
+        if ("run_service".equals(toolName)) return Boolean.TRUE.equals(stored.get("ok"));
+        if ("request".equals(toolName)) {
+            Object status = stored.get("status");
+            int s = status instanceof Number ? ((Number) status).intValue() : 0;
+            return s >= 200 && s < 300;
+        }
+        return false;
+    }
+
     private boolean isWorldWriteSuccess(String toolName, String argumentsJson, Map<?, ?> stored) {
         if (client.ec instanceof ExecutionContextImpl && ((ExecutionContextImpl) client.ec).simSession)
             return false;
-        if (stored == null || stored.get("error") != null) return false;
+        if (!callSucceeded(toolName, stored)) return false;
+        if (stored.get("error") != null) return false;
         if ("run_service".equals(toolName)) return Boolean.TRUE.equals(stored.get("ok"));
         if ("request".equals(toolName)) {
             Map<String, Object> args = LlmJson.tryToMap(argumentsJson);

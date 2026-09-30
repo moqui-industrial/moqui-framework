@@ -22,13 +22,23 @@ import org.apache.logging.log4j.core.config.plugins.Plugin;
 import org.apache.logging.log4j.core.config.plugins.PluginAttribute;
 import org.apache.logging.log4j.core.config.plugins.PluginElement;
 import org.apache.logging.log4j.core.config.plugins.PluginFactory;
-
 @Plugin(name="MoquiLog4jAppender", category="Core", elementType="appender", printObject=true)
 public final class MoquiLog4jAppender extends AbstractAppender {
-    private static volatile ExecutionContextFactory executionContextFactory = null;
 
     // private final ReadWriteLock rwLock = new ReentrantReadWriteLock();
     // private final Lock readLock = rwLock.readLock();
+
+    /**
+     * Set once factory init finishes. append() must not touch {@code Moqui}: static init logs while it holds
+     * the class-init lock, and this appender runs on the async thread, so that call deadlocks when the queue fills.
+     */
+    private static volatile ExecutionContextFactory boundFactory;
+
+    public static void bind(ExecutionContextFactory ecf) { boundFactory = ecf; }
+
+    public static void unbind(ExecutionContextFactory ecf) {
+        if (boundFactory == ecf) boundFactory = null;
+    }
 
     protected MoquiLog4jAppender(String name, Filter filter, Layout<? extends Serializable> layout,
                                  final boolean ignoreExceptions, final Property[] properties) {
@@ -37,7 +47,7 @@ public final class MoquiLog4jAppender extends AbstractAppender {
 
     @Override
     public void append(LogEvent event) {
-        ExecutionContextFactory ecf = executionContextFactory;
+        ExecutionContextFactory ecf = boundFactory;
         // ECF may not yet be initialized
         if (ecf == null) return;
         List<LogEventSubscriber> subscribers = ecf.getLogEventSubscribers();
@@ -58,8 +68,6 @@ public final class MoquiLog4jAppender extends AbstractAppender {
         }
         */
     }
-
-    public static void setExecutionContextFactory(ExecutionContextFactory ecf) { executionContextFactory = ecf; }
 
     @PluginFactory
     public static MoquiLog4jAppender createAppender(@PluginAttribute("name") String name,

@@ -33,6 +33,7 @@ import org.moqui.llm.LlmTool
 import org.moqui.llm.LlmToolCall
 import org.moqui.llm.LlmToolResult
 import org.moqui.llm.WindowPolicy
+import org.moqui.impl.llm.LlmGateway
 import org.moqui.impl.llm.RequestTool
 import org.moqui.impl.llm.ServiceCallTool
 import org.moqui.impl.llm.WriteUiTool
@@ -1045,6 +1046,88 @@ class LlmClientTests extends Specification {
         enriched.fields[3].defaultValue == 10
     }
 
+    def "write_ui date-time defaultValue formats epoch, now, and display strings"() {
+        given:
+        Locale locale = Locale.US
+        TimeZone central = TimeZone.getTimeZone("US/Central")
+        long epochMs = 1790589009290L
+        long epochSec = 1790589009L
+        WriteUiTool tool = new WriteUiTool()
+
+        expect:
+        WriteUiTool.normalizeDateDefault(epochMs, "date-time", 0L, locale, central) == "2026-09-28 04:50"
+        WriteUiTool.normalizeDateDefault(epochSec, null, 0L, locale, central) == "2026-09-28 04:50"
+        WriteUiTool.normalizeDateDefault("1790589009290", "timestamp", 0L, locale, central) == "2026-09-28 04:50"
+        WriteUiTool.normalizeDateDefault("now", "date-time", epochMs, locale, central) == "2026-09-28 04:50"
+        WriteUiTool.normalizeDateDefault("NOW", "date", epochMs, locale, central) == "2026-09-28"
+        WriteUiTool.normalizeDateDefault(epochMs, "date", 0L, locale, central) == "2026-09-28"
+        WriteUiTool.normalizeDateDefault("2026-09-28 04:50", "date-time", 0L, locale, central) == "2026-09-28 04:50"
+        WriteUiTool.normalizeDateDefault(10, "date-time", 0L, locale, central) == 10
+        WriteUiTool.normalizeDateDefault("not-a-date", "date-time", 0L, locale, central) == "not-a-date"
+
+        when:
+        def enriched = tool.enrichForClient([
+                fields: [
+                        [name: "approvedDate", widget: "date-time", defaultValue: epochMs],
+                        [name: "n", widget: "text-line", defaultValue: 10],
+                        [name: "day", widget: "date", defaultValue: epochMs],
+                        [name: "shown", widget: "date-time", defaultValue: "2026-09-28 04:50"]
+                ]
+        ], null)
+        then:
+        enriched.fields.find { it.name == "n" }.defaultValue == 10
+        enriched.fields.find { it.name == "approvedDate" }.defaultValue ==
+                WriteUiTool.normalizeDateDefault(epochMs, "date-time", 0L, Locale.ROOT, TimeZone.getTimeZone("UTC"))
+        enriched.fields.find { it.name == "day" }.widget == "date-time"
+        enriched.fields.find { it.name == "day" }.widgetType == "date"
+        enriched.fields.find { it.name == "day" }.defaultValue == "2026-09-28"
+        enriched.fields.find { it.name == "shown" }.defaultValue == "2026-09-28 04:50"
+    }
+
+    def "writeMode note names the active mode"() {
+        expect:
+        LlmGateway.writeModeNote("script").startsWith("writeMode=script")
+        LlmGateway.writeModeNote("script").contains("kind=openui")
+        LlmGateway.writeModeNote("agent").startsWith("writeMode=agent")
+        LlmGateway.writeModeNote("agent").contains("submitted:true")
+        LlmGateway.writeModeNote("nope") == ""
+        LlmGateway.writeModeNote(null) == ""
+        LlmGateway.canonicalWriteMode("Script") == "script"
+        LlmGateway.canonicalWriteMode("AGENT") == "agent"
+        LlmGateway.canonicalWriteMode("other") == null
+    }
+
+    def "Assist prompt tells models the date format and writeMode"() {
+        given:
+        File assist = new File("../runtime/base-component/tools/prompt/AssistSystem.ftl")
+        File openUi = new File("../runtime/base-component/tools/prompt/OpenUiLang.prompt.txt")
+        expect:
+        assist.exists()
+        assist.text.contains("YYYY-MM-DD HH:mm")
+        assist.text.contains("writeMode")
+        assist.text.contains("*_display")
+        assist.text.contains("kind=openui")
+        assist.text.contains("adjust: true")
+        assist.text.toLowerCase().contains("do not browse")
+        assist.text.contains("`kind` `transition`")
+        !assist.text.contains("root = Stack([...])")
+        openUi.text.contains("YYYY-MM-DD HH:mm")
+        openUi.text.contains("*_display")
+        openUi.text.contains("root = Stack(...)")
+        !openUi.text.contains("root = Stack([...])")
+    }
+
+    def "write_ui instruction is a sentence and lang description is not the placeholder"() {
+        when:
+        WriteUiTool tool = new WriteUiTool()
+        Map props = tool.parametersSchema.get("properties")
+        then:
+        props.get("instruction").get("description").toString().contains("short sentence")
+        !props.get("instruction").get("description").toString().contains("root = Stack([...])")
+        !props.get("lang").get("description").toString().contains("root = Stack([...])")
+        !tool.description.contains("root = Stack([...])")
+    }
+
     def "write_ui writeThrough merges fields and honors removeFields"() {
         given:
         def conv = LlmConversationImpl.create(null, "default", null)
@@ -1101,7 +1184,7 @@ class LlmClientTests extends Specification {
 
     def "write_ui kind vue-sfc is kept and form drops sfc"() {
         given:
-        WriteUiTool tool = new WriteUiTool()
+        WriteUiTool tool = new WriteUiTool().setAllowVueSfc(true)
         String sfc = "<template><div>{{values.n}}</div></template>\n<script>module.exports = {props:['values']}</script>"
         when:
         def vue = tool.enrichForClient([
@@ -1131,7 +1214,7 @@ class LlmClientTests extends Specification {
 
     def "write_ui vue-sfc assembles parts, strips script src and fences, rejects empty and oversized"() {
         given:
-        WriteUiTool tool = new WriteUiTool()
+        WriteUiTool tool = new WriteUiTool().setAllowVueSfc(true)
         String huge = "<template><div>" + ("x" * (64 * 1024 + 10)) + "</div></template>"
         when:
         def parts = tool.enrichForClient([
@@ -1178,7 +1261,7 @@ class LlmClientTests extends Specification {
     def "write_ui writeThrough replaces or keeps vue-sfc and switches kind"() {
         given:
         def conv = LlmConversationImpl.create(null, "default", null)
-        WriteUiTool tool = new WriteUiTool()
+        WriteUiTool tool = new WriteUiTool().setAllowVueSfc(true)
         def first = tool.enrichForClient([
                 kind: "vue-sfc",
                 title: "One",
@@ -1242,6 +1325,30 @@ class LlmClientTests extends Specification {
         !empty.containsKey("lang")
         oversized.langError == "openui lang exceeds 64KiB"
         !oversized.containsKey("lang")
+    }
+
+    def "write_ui openui without lang but with fields and actions is a form"() {
+        given:
+        WriteUiTool tool = new WriteUiTool()
+        when:
+        def formed = tool.enrichForClient([
+                kind: "openui",
+                instruction: "Confirm approval of sales order 55300",
+                submitLabel: "Approve Order 55300",
+                fields: [[name: "orderId", widget: "display", label: "Order", defaultValue: "55300"]],
+                actions: [[id: "approve", label: "Approve Order 55300", method: "POST",
+                           path: "/apps/marble/Order/OrderDetail/approveOrder", bodyFromFields: ["orderId"]]]
+        ], null)
+        then:
+        formed.kind == "form"
+        !formed.containsKey("langError")
+        !formed.containsKey("lang")
+        formed.submitLabel == "Approve Order 55300"
+        formed.fields.size() == 1
+        formed.fields[0].defaultValue == "55300"
+        formed.actions.size() == 1
+        formed.actions[0].path == "/apps/marble/Order/OrderDetail/approveOrder"
+        formed.actions[0].bodyFromFields == ["orderId"]
     }
 
     def "write_ui writeThrough merges openui lang statements"() {

@@ -113,7 +113,12 @@ public class RequestTool implements LlmTool {
 
         Map<String, Object> query = asMap(args.get("query"));
         Map<String, Object> body = asMap(args.get("body"));
-        return renderOnScreen(ec, method, segments, query, body);
+        MessageCapture.Snap prior = MessageCapture.take(ec);
+        try {
+            return renderOnScreen(ec, method, segments, query, body);
+        } finally {
+            MessageCapture.restore(ec, prior);
+        }
     }
 
     /**
@@ -206,8 +211,8 @@ public class RequestTool implements LlmTool {
         cs.push();
         try {
             Map<String, Object> params = new LinkedHashMap<>();
-            if (query != null) params.putAll(query);
-            if (body != null) params.putAll(body);
+            if (query != null) params.putAll(ServiceCallTool.sanitizeArguments(query));
+            if (body != null) params.putAll(ServiceCallTool.sanitizeArguments(body));
 
             Map<String, Object> sessionAttrs = new LinkedHashMap<>();
             if (previous != null && previous.getSessionAttributes() != null)
@@ -230,23 +235,20 @@ public class RequestTool implements LlmTool {
             String text = wfs.getResponseText();
             Map<String, Object> headers = headersFromStub(wfs);
             json = wrapFormListJson(segments, json, headers);
+            if (ToolResultTrim.isSearchActionsPath(segments) || ScreenSearchHints.isMantleSearchActions(eci, segments))
+                json = ToolResultTrim.projectSearchActions(json);
             if (isHtmlDump(json, text, wfs.getHttpServletResponseStub().getContentType(), status)) {
-                return result(400, null, HTML_ERROR, headers);
+                return withSubmitted(finish(result(400, null, HTML_ERROR, headers), eci), body);
             }
-            if (eci.getMessage().hasError()) {
-                String errors = eci.getMessage().getErrorsString();
-                eci.getMessage().clearErrors();
-                if (json == null && (text == null || text.isBlank())) text = errors;
-            }
-            return result(status, json, json != null ? null : text, headers);
+            return withSubmitted(finish(result(status, json, json != null ? null : text, headers), eci), body);
         } catch (ArtifactAuthorizationException e) {
-            return result(403, null, e.getMessage(), null);
+            return withSubmitted(finish(result(403, null, e.getMessage(), null), ec), body);
         } catch (ArtifactTarpitException e) {
-            return result(429, null, e.getMessage(), null);
+            return withSubmitted(finish(result(429, null, e.getMessage(), null), ec), body);
         } catch (AuthenticationRequiredException e) {
-            return result(401, null, e.getMessage(), null);
+            return withSubmitted(finish(result(401, null, e.getMessage(), null), ec), body);
         } catch (Throwable t) {
-            return result(statusFrom(t), null, t.getMessage(), null);
+            return withSubmitted(finish(result(statusFrom(t), null, t.getMessage(), null), ec), body);
         } finally {
             cs.pop();
             if (previous != null) eci.setWebFacade(previous);
@@ -285,6 +287,25 @@ public class RequestTool implements LlmTool {
         return 500;
     }
 
+    /** Drop the show-total footer row so Query counts and sums are not applied twice. */
+    static List<?> withoutTotalRows(List<?> rows) {
+        if (rows == null || rows.isEmpty()) return rows;
+        List<Object> kept = null;
+        for (int i = 0; i < rows.size(); i++) {
+            Object row = rows.get(i);
+            boolean total = row instanceof Map && "total".equals(String.valueOf(((Map<?, ?>) row).get("_moquiRowType")));
+            if (!total) {
+                if (kept != null) kept.add(row);
+                continue;
+            }
+            if (kept == null) {
+                kept = new ArrayList<>(rows.size() - 1);
+                for (int j = 0; j < i; j++) kept.add(rows.get(j));
+            }
+        }
+        return kept != null ? kept : rows;
+    }
+
     /** Form-list GET {screen}/actions/{formName} returns a JSON array; wrap as {rows,totalCount} for Query(data.rows). */
     static boolean isFormListJsonPath(List<String> segments) {
         if (segments == null || segments.size() < 3) return false;
@@ -294,7 +315,7 @@ public class RequestTool implements LlmTool {
     static Object wrapFormListJson(List<String> segments, Object json, Map<String, Object> headers) {
         if (!isFormListJsonPath(segments) || !(json instanceof List)) return json;
         Map<String, Object> wrap = new LinkedHashMap<>();
-        List<?> rows = (List<?>) json;
+        List<?> rows = withoutTotalRows((List<?>) json);
         wrap.put("rows", rows);
         Object tc = headers != null ? headers.get("X-Total-Count") : null;
         if (tc == null && headers != null) tc = headers.get("x-total-count");
@@ -306,6 +327,22 @@ public class RequestTool implements LlmTool {
         } else total = rows.size();
         wrap.put("totalCount", total);
         return wrap;
+    }
+
+    /** Attach messages produced by the screen, including warnings on a 200. */
+    public static Map<String, Object> finish(Map<String, Object> result, ExecutionContext ec) {
+        MessageCapture.Snap snap = MessageCapture.take(ec);
+        MessageCapture.attach(result, snap);
+        if (result.get("text") == null && snap != null && !snap.errors.isEmpty() && result.get("json") == null) {
+            result.put("text", String.join("\n", snap.errors));
+        }
+        return result;
+    }
+
+    /** Echo the submitted body so a redirect partyId stays tied to the call that created it. */
+    static Map<String, Object> withSubmitted(Map<String, Object> result, Map<String, Object> body) {
+        if (result != null && body != null && !body.isEmpty()) result.put("submitted", body);
+        return result;
     }
 
     static Map<String, Object> result(int status, Object json, String text, Map<String, Object> headers) {

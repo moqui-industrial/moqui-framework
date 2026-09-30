@@ -12,11 +12,17 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
+import org.moqui.BaseException
 import org.moqui.Moqui
 import org.moqui.context.ExecutionContext
 import org.moqui.entity.EntityValue
+import org.moqui.impl.context.ExecutionContextImpl
 import org.moqui.impl.context.TransactionCacheDb
+import org.moqui.impl.entity.EntityDefinition
 import org.moqui.impl.entity.EntityFacadeImpl
+import org.moqui.impl.entity.FieldInfo
+import org.moqui.impl.entity.OverlayColumnNames
+import org.moqui.util.RestClient
 import spock.lang.Shared
 import spock.lang.Specification
 
@@ -34,6 +40,7 @@ class TransactionCacheDbTests extends Specification {
         ec.transaction.begin(null)
     }
     def cleanup() {
+        ((ExecutionContextImpl) ec).simSession = false
         if (ec.entity.isTxCacheActive()) ec.entity.stopTxCache()
         if (ec.transaction.isTransactionInPlace()) ec.transaction.commit()
         ec.artifactExecution.enableAuthz()
@@ -82,6 +89,40 @@ class TransactionCacheDbTests extends Specification {
         cleanup:
         if (ec.entity.isTxCacheActive()) ec.entity.stopTxCache()
         ec.entity.find("moqui.test.TestEntity").condition("testId", "TCUPD1").one()?.delete()
+    }
+
+    def "HOLD partial update does not null other columns"() {
+        when:
+        ec.entity.makeValue("moqui.test.TestEntity").setAll([testId:"TCPART1", testMedium:"keep-me", testLong:"long-keep"]).create()
+        ec.transaction.commit()
+        ec.transaction.begin(null)
+
+        ec.entity.startTxCacheDb(true)
+        ec.entity.makeValue("moqui.test.TestEntity").set("testId", "TCPART1").set("testMedium", "changed").update()
+        EntityValue overlay = ec.entity.find("moqui.test.TestEntity").condition("testId", "TCPART1").one()
+        EntityValue world = worldFind("moqui.test.TestEntity", "testId", "TCPART1")
+
+        then:
+        overlay.testMedium == "changed"
+        overlay.testLong == "long-keep"
+        world.testMedium == "keep-me"
+        world.testLong == "long-keep"
+
+        cleanup:
+        if (ec.entity.isTxCacheActive()) ec.entity.stopTxCache()
+        ec.entity.find("moqui.test.TestEntity").condition("testId", "TCPART1").one()?.delete()
+    }
+
+    def "sqlFind is refused in sim"() {
+        when:
+        ((org.moqui.impl.context.ExecutionContextImpl) ec).simSession = true
+        ec.entity.sqlFind("select TEST_ID from TEST_ENTITY", null, "moqui.test.TestEntity", ["testId"])
+
+        then:
+        thrown(Exception)
+
+        cleanup:
+        ((org.moqui.impl.context.ExecutionContextImpl) ec).simSession = false
     }
 
     def "HOLD delete does not remove production and copy-on-read does not resurrect"() {
@@ -181,5 +222,68 @@ class TransactionCacheDbTests extends Specification {
 
         cleanup:
         ec.entity.find("moqui.test.TestEntity").condition("testId", "TCFLUSH1").one()?.delete()
+    }
+
+    def "RestClient is refused in simSession"() {
+        when:
+        ((ExecutionContextImpl) ec).simSession = true
+        new RestClient().uri("http://127.0.0.1:9/").timeout(1).call()
+        then:
+        BaseException e = thrown()
+        e.message.contains("sim session")
+    }
+
+    def "RestClient allowInSim is not the sim fence"() {
+        when:
+        ((ExecutionContextImpl) ec).simSession = true
+        new RestClient().allowInSim(true).uri("http://127.0.0.1:1/").timeout(1).call()
+        then:
+        BaseException e = thrown()
+        !e.message.contains("sim session")
+    }
+
+    def "async service is skipped in simSession"() {
+        when:
+        ((ExecutionContextImpl) ec).simSession = true
+        def future = ec.service.async().name("create#moqui.test.TestEntity")
+                .parameter("testId", "TCSIMASYNC").parameter("testMedium", "nope").callFuture()
+        def result = future.get()
+        EntityValue world = ec.entity.find("moqui.test.TestEntity").condition("testId", "TCSIMASYNC").one()
+        then:
+        result.simSkipped == true
+        world == null
+    }
+
+    def "overlay column names follow the H2 name-replace list"() {
+        when:
+        EntityDefinition ed = ((EntityFacadeImpl) ec.entity).getEntityDefinition("moqui.test.TestEntity")
+        FieldInfo fi = ed.getFieldInfo("value")
+        def h2 = ((EntityFacadeImpl) ec.entity).getDatabaseNodeByConf("h2")
+        def postgres = ((EntityFacadeImpl) ec.entity).getDatabaseNodeByConf("postgres")
+        String full
+        OverlayColumnNames.setActive(true)
+        try {
+            full = fi.getFullColumnName()
+        } finally {
+            OverlayColumnNames.setActive(false)
+        }
+        ec.entity.startTxCacheDb(true)
+        ec.entity.makeValue("moqui.test.TestEntity")
+                .setAll([testId:"TCVAL1", testMedium:"m", value:"kept"]).create()
+        EntityValue overlay = ec.entity.find("moqui.test.TestEntity").condition("testId", "TCVAL1").one()
+
+        then:
+        OverlayColumnNames.rawName(fi) == "VALUE"
+        OverlayColumnNames.apply(h2, "VALUE") == "THE_VALUE"
+        OverlayColumnNames.apply(postgres, "VALUE") == "VALUE"
+        OverlayColumnNames.apply(h2, "THE_VALUE") == "THE_VALUE"
+        OverlayColumnNames.column(fi) == "THE_VALUE"
+        full == "THE_VALUE"
+        overlay != null
+        overlay.value == "kept"
+
+        cleanup:
+        if (ec.entity.isTxCacheActive()) ec.entity.stopTxCache()
+        ec.entity.find("moqui.test.TestEntity").condition("testId", "TCVAL1").one()?.delete()
     }
 }

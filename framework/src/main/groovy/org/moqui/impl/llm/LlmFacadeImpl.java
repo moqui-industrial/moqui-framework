@@ -35,6 +35,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 public class LlmFacadeImpl implements LlmFacade {
     private static final Logger logger = LoggerFactory.getLogger(LlmFacadeImpl.class);
@@ -262,6 +264,9 @@ public class LlmFacadeImpl implements LlmFacade {
         public final boolean allowBrowse;
         public final boolean allowRunService;
         public final boolean allowUnprefixedRequest;
+        public final boolean allowEnterSim;
+        public final boolean allowVueSfc;
+        public final List<BasicEntityAllow> allowedBasicEntities;
 
         ProfileState(String name, MNode confNode, String url, String path, String endpointUrl, String apiKey,
                 String authHeaderName, String authHeaderValue, String model, String maxTokensParameter,
@@ -272,7 +277,8 @@ public class LlmFacadeImpl implements LlmFacade {
                 RestClient.PooledRequestFactory requestFactory, LlmProtocol protocol,
                 Set<String> allowedEntities, List<AllowedPath> allowedPaths,
                 boolean allowWriteUi, int ssePingSeconds, String systemLocation, boolean allowClientSystem,
-                boolean allowBrowse, boolean allowRunService, boolean allowUnprefixedRequest) {
+                boolean allowBrowse, boolean allowRunService, boolean allowUnprefixedRequest,
+                boolean allowEnterSim, boolean allowVueSfc, List<BasicEntityAllow> allowedBasicEntities) {
             this.name = name;
             this.confNode = confNode;
             this.url = url;
@@ -306,6 +312,9 @@ public class LlmFacadeImpl implements LlmFacade {
             this.allowBrowse = allowBrowse;
             this.allowRunService = allowRunService;
             this.allowUnprefixedRequest = allowUnprefixedRequest;
+            this.allowEnterSim = allowEnterSim;
+            this.allowVueSfc = allowVueSfc;
+            this.allowedBasicEntities = allowedBasicEntities != null ? allowedBasicEntities : Collections.emptyList();
         }
 
         static ProfileState fromConf(String name, MNode node, ExecutionContextFactoryImpl ecfi) {
@@ -340,10 +349,12 @@ public class LlmFacadeImpl implements LlmFacade {
             String systemLocation = node.attribute("system-location");
             if (systemLocation != null) systemLocation = systemLocation.trim();
             if (systemLocation != null && systemLocation.isEmpty()) systemLocation = null;
-            boolean allowClientSystem = parseBoolean(node.attribute("allow-client-system"), true);
+            boolean allowClientSystem = parseBoolean(node.attribute("allow-client-system"), false);
             boolean allowBrowse = parseBoolean(node.attribute("allow-browse"), false);
             boolean allowRunService = parseBoolean(node.attribute("allow-run-service"), false);
             boolean allowUnprefixedRequest = parseBoolean(node.attribute("allow-unprefixed-request"), false);
+            boolean allowEnterSim = parseBoolean(node.attribute("allow-enter-sim"), false);
+            boolean allowVueSfc = parseBoolean(node.attribute("allow-vue-sfc"), false);
 
             Map<String, String> extraHeaders = new LinkedHashMap<>();
             for (MNode header : node.children("header")) {
@@ -370,6 +381,15 @@ public class LlmFacadeImpl implements LlmFacade {
                 if (prefix == null || prefix.isBlank()) continue;
                 allowedPaths.add(new AllowedPath(prefix, nvl(ap.attribute("methods"), "GET")));
             }
+            List<BasicEntityAllow> allowedBasic = new ArrayList<>();
+            for (MNode be : node.children("allowed-basic-entity")) {
+                try {
+                    allowedBasic.add(new BasicEntityAllow(be.attribute("package"), be.attribute("entity")));
+                } catch (PatternSyntaxException e) {
+                    throw new LlmException("Invalid allowed-basic-entity pattern on profile " + name
+                            + ": " + e.getMessage());
+                }
+            }
 
             String endpointUrl = OpenAiCompatProtocol.composeEndpointUrl(url, path, extraQuery);
 
@@ -394,7 +414,8 @@ public class LlmFacadeImpl implements LlmFacade {
                     Collections.unmodifiableMap(extraHeaders), Collections.unmodifiableMap(extraQuery),
                     rf, protocol, Collections.unmodifiableSet(allowedEntities),
                     Collections.unmodifiableList(allowedPaths), allowWriteUi, ssePingSeconds,
-                    systemLocation, allowClientSystem, allowBrowse, allowRunService, allowUnprefixedRequest);
+                    systemLocation, allowClientSystem, allowBrowse, allowRunService, allowUnprefixedRequest,
+                    allowEnterSim, allowVueSfc, Collections.unmodifiableList(allowedBasic));
         }
 
         /** Test helper: no HTTP pool. */
@@ -415,7 +436,8 @@ public class LlmFacadeImpl implements LlmFacade {
                     Collections.emptyMap(), Collections.emptyMap(), null, protocol,
                     Collections.emptySet(),
                     allowedPaths != null ? allowedPaths : Collections.emptyList(),
-                    allowWriteUi, 15, null, true, false, false, false);
+                    allowWriteUi, 15, null, true, false, false, false, false, false,
+                    Collections.emptyList());
         }
         public static ProfileState forTest(String name, LlmProtocol protocol, String model,
                 boolean allowTxOverHttp, int emptyRetries, float retryInitialSeconds, int retryMax,
@@ -428,6 +450,14 @@ public class LlmFacadeImpl implements LlmFacade {
                 boolean allowTxOverHttp, int emptyRetries, float retryInitialSeconds, int retryMax,
                 List<AllowedPath> allowedPaths, boolean allowWriteUi, boolean allowUnprefixedRequest,
                 boolean allowBrowse, boolean allowRunService, boolean allowClientSystem) {
+            return forTest(name, protocol, model, allowTxOverHttp, emptyRetries, retryInitialSeconds, retryMax,
+                    allowedPaths, allowWriteUi, allowUnprefixedRequest, allowBrowse, allowRunService,
+                    allowClientSystem, false);
+        }
+        public static ProfileState forTest(String name, LlmProtocol protocol, String model,
+                boolean allowTxOverHttp, int emptyRetries, float retryInitialSeconds, int retryMax,
+                List<AllowedPath> allowedPaths, boolean allowWriteUi, boolean allowUnprefixedRequest,
+                boolean allowBrowse, boolean allowRunService, boolean allowClientSystem, boolean allowEnterSim) {
             if (protocol == null) protocol = new OpenAiCompatProtocol();
             return new ProfileState(name, null, "http://127.0.0.1", OpenAiCompatProtocol.DEFAULT_PATH,
                     "http://127.0.0.1/v1/chat/completions", "", "Authorization", null,
@@ -437,7 +467,8 @@ public class LlmFacadeImpl implements LlmFacade {
                     Collections.emptyMap(), Collections.emptyMap(), null, protocol,
                     Collections.emptySet(),
                     allowedPaths != null ? allowedPaths : Collections.emptyList(),
-                    allowWriteUi, 15, null, allowClientSystem, allowBrowse, allowRunService, allowUnprefixedRequest);
+                    allowWriteUi, 15, null, allowClientSystem, allowBrowse, allowRunService, allowUnprefixedRequest,
+                    allowEnterSim, false, Collections.emptyList());
         }
     }
 
@@ -447,6 +478,39 @@ public class LlmFacadeImpl implements LlmFacade {
         public AllowedPath(String prefix, String methodsCsv) {
             this.prefix = prefix;
             this.methodsCsv = methodsCsv;
+        }
+    }
+
+    /**
+     * One allowed-basic-entity element. package and entity are full-string regexes.
+     * A null pattern means that side is not constrained. Both null matches nothing.
+     */
+    public static final class BasicEntityAllow {
+        public final Pattern packagePattern;
+        public final Pattern entityPattern;
+
+        public BasicEntityAllow(String packagePattern, String entityPattern) {
+            this.packagePattern = compile(packagePattern);
+            this.entityPattern = compile(entityPattern);
+        }
+        private static Pattern compile(String raw) {
+            if (raw == null || raw.isBlank()) return null;
+            return Pattern.compile(raw.trim());
+        }
+        public boolean matches(String packageName, String entityName) {
+            if (packagePattern == null && entityPattern == null) return false;
+            if (packagePattern != null && (packageName == null || !packagePattern.matcher(packageName).matches()))
+                return false;
+            if (entityPattern != null && (entityName == null || !entityPattern.matcher(entityName).matches()))
+                return false;
+            return true;
+        }
+        public static boolean any(List<BasicEntityAllow> rules, String packageName, String entityName) {
+            if (rules == null) return false;
+            for (BasicEntityAllow rule : rules) {
+                if (rule != null && rule.matches(packageName, entityName)) return true;
+            }
+            return false;
         }
     }
 }

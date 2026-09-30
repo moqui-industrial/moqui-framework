@@ -36,7 +36,8 @@ final class SkillUseGate {
 
     static boolean allowed(LlmClientImpl client, String toolName) {
         if (client == null || !client.forceSkillUse) return true;
-        if (FindSkillTool.NAME.equals(toolName) || EnterSimTool.NAME.equals(toolName)) return true;
+        if (FindSkillTool.NAME.equals(toolName) || EnterSimTool.NAME.equals(toolName)
+                || PinTool.NAME.equals(toolName)) return true;
         if (client.ec instanceof ExecutionContextImpl && ((ExecutionContextImpl) client.ec).simSession)
             return true;
         return client.activeSkillName != null && !client.activeSkillName.isBlank();
@@ -53,5 +54,7 @@ final class SkillUseGate {
         if (client == null || skillName == null || skillName.isBlank()) return;
         client.activeSkillName = skillName;
         if (client.conversation != null) client.conversation.setAttribute("activeSkillName", skillName);
+        // The next model iteration reads this from the conversation window. Tool-result trim drops the widgets section.
+        LlmGateway.refreshContext(client, "skill-widgets", SkillIndex.activeWidgetText(client.ec, skillName));
     }
 }

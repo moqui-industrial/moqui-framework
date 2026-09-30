@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Future;
 
 import javax.annotation.Nonnull;
@@ -58,6 +59,8 @@ public class ExecutionContextImpl implements ExecutionContext {
     public EntityTxCache entityTxCache = null;
     /** When true, side-effect fence is on (email/HTTP/async suppressed). Usually paired with HOLD overlay. */
     public boolean simSession = false;
+
+    @Override public boolean isSimSession() { return simSession; }
 
     private WebFacade webFacade = (WebFacade) null;
     private WebFacadeImpl webFacadeImpl = (WebFacadeImpl) null;
@@ -233,11 +236,19 @@ public class ExecutionContextImpl implements ExecutionContext {
 
     @Override
     public Future runAsync(@Nonnull Closure closure) {
+        if (simSession) {
+            loggerDirect.info("Skipping runAsync in LLM sim session");
+            return CompletableFuture.completedFuture(null);
+        }
         ThreadPoolRunnable runnable = new ThreadPoolRunnable(this, closure);
         return ecfi.workerPool.submit(runnable);
     }
     /** Uses the ECFI constructor for ThreadPoolRunnable so does NOT use the current ECI in the separate thread */
     public Future runInWorkerThread(@Nonnull Closure closure) {
+        if (simSession) {
+            loggerDirect.info("Skipping runInWorkerThread in LLM sim session");
+            return CompletableFuture.completedFuture(null);
+        }
         ThreadPoolRunnable runnable = new ThreadPoolRunnable(ecfi, closure);
         return ecfi.workerPool.submit(runnable);
     }

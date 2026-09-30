@@ -34,22 +34,30 @@ import java.util.regex.Pattern;
  * Compact, redacted one-line traces for Assist chat summaries and INFO logs.
  * Independent of profile {@code log-content} (that flag still controls LlmCallLog JSON).
  *
- * Full unredacted dumps: the two {@code TOREMOVE} logger.info lines in
- * {@link #logRequest} and {@link #logResponse}. Comment those two lines to silence;
- * uncomment to debug prompts. Dump helpers stay so those two lines are all that changes.
+ * Full unredacted dumps: set {@code llm_trace_dump=true} (system property or env).
+ * Dump lines are tagged {@code TOREMOVE} so they can be grepped.
  */
 public final class LlmTrace {
     private static final Logger logger = LoggerFactory.getLogger(LlmTrace.class);
-    /** Grep key for temporary full-body dumps. */
+    /** Grep key for optional full-body dumps ({@code llm_trace_dump=true}). */
     public static final String TOREMOVE = "TOREMOVE";
     public static final int PREVIEW_CHARS = 60;
     static final int VALUE_MAX = 80;
+    static final int ERROR_MAX = 1000;
     static final int SUMMARY_MAX = 240;
+    static final int ERROR_SUMMARY_MAX = 2000;
     static final int MAX_GENERIC_KEYS = 6;
     private static final Pattern SENSITIVE = Pattern.compile(
             "password|secret|api[-_]?key|authorization|ssn|creditcard", Pattern.CASE_INSENSITIVE);
 
     private LlmTrace() { }
+
+    /** Unredacted conversation dumps. Off unless {@code llm_trace_dump=true}. */
+    public static boolean isDumpEnabled() {
+        String v = System.getProperty("llm_trace_dump");
+        if (v == null || v.isEmpty()) v = System.getenv("llm_trace_dump");
+        return "true".equalsIgnoreCase(v);
+    }
 
     public static void logRequest(LlmClientImpl client, ProtocolRequest req) {
         if (!logger.isInfoEnabled()) return;
@@ -60,8 +68,8 @@ public final class LlmTrace {
                 req != null ? req.model : null,
                 req != null && req.stream,
                 req != null ? req.window : null));
-        // TOREMOVE full dump (unredacted). Comment this line to silence; uncomment to debug prompts.
-        logger.info("{}\n{}", formatDumpRequestLine(profile, convId, sim, req), formatDumpRequest(req));
+        if (isDumpEnabled())
+            logger.info("{}\n{}", formatDumpRequestLine(profile, convId, sim, req), formatDumpRequest(req));
     }
 
     public static void logResponse(LlmClientImpl client, ProtocolResult result, long durationMs) {
@@ -70,8 +78,8 @@ public final class LlmTrace {
         String convId = client != null ? client.convId() : null;
         boolean sim = isSim(client);
         logger.info(formatResponse(profile, convId, sim, durationMs, result));
-        // TOREMOVE full dump (unredacted). Comment this line to silence; uncomment to debug prompts.
-        logger.info("{}\n{}", formatDumpResponseLine(profile, convId, sim, result), formatDumpResponse(result));
+        if (isDumpEnabled())
+            logger.info("{}\n{}", formatDumpResponseLine(profile, convId, sim, result), formatDumpResponse(result));
     }
 
     public static void logToolCall(String name, Object arguments) {
@@ -357,6 +365,10 @@ public final class LlmTrace {
             } else if ("write_ui".equals(name)) {
                 if (m.containsKey("submitted"))
                     parts.add(Boolean.TRUE.equals(m.get("submitted")) ? "submitted" : "not submitted");
+                if (Boolean.TRUE.equals(m.get("adjust"))) parts.add("adjust");
+                Object notices = m.get("notices");
+                if (notices instanceof List && !((List<?>) notices).isEmpty())
+                    parts.add("notices=" + ((List<?>) notices).size());
                 Object button = m.get("button");
                 if (button != null && !button.toString().isBlank()) parts.add("button=" + button);
                 addError(parts, m);
@@ -376,7 +388,10 @@ public final class LlmTrace {
             parts.add(cap(collapseWs(String.valueOf(content)), VALUE_MAX));
         }
         if (parts.isEmpty() && content != null) parts.add("ok");
-        return cap(String.join(" ", parts), SUMMARY_MAX);
+        String joined = String.join(" ", parts);
+        boolean hasError = false;
+        for (String p : parts) if (p.startsWith("error=")) { hasError = true; break; }
+        return cap(joined, hasError ? ERROR_SUMMARY_MAX : SUMMARY_MAX);
     }
 
     public static Preview preview(String text, int n) {
@@ -522,7 +537,7 @@ public final class LlmTrace {
         Object err = m.get("error");
         if (err == null) return;
         String s = collapseWs(String.valueOf(err));
-        if (!s.isEmpty()) parts.add("error=" + quote(cap(s, VALUE_MAX)));
+        if (!s.isEmpty()) parts.add("error=" + quote(cap(s, ERROR_MAX)));
     }
 
     @SuppressWarnings("unchecked")
