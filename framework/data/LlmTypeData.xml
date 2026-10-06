@@ -41,6 +41,14 @@ along with this software (see the LICENSE.md file). If not, see
     <moqui.security.ArtifactAuthz artifactAuthzId="LlmSkillEntitiesADMIN" userGroupId="ADMIN"
             artifactGroupId="LlmSkillEntities" authzTypeEnumId="AUTHZT_ALWAYS" authzActionEnumId="AUTHZA_ALL"/>
 
+    <!-- Background execution of durable runs. ADMIN by default; components that run agents grant their own groups. -->
+    <moqui.security.ArtifactGroup artifactGroupId="LlmRunServices" description="LLM run background execution services"/>
+    <moqui.security.ArtifactGroupMember artifactGroupId="LlmRunServices"
+            artifactName="org\.moqui\.impl\.LlmServices\.(start|execute|answer|confirm|suspend)#.*"
+            nameIsPattern="Y" artifactTypeEnumId="AT_SERVICE" inheritAuthz="N"/>
+    <moqui.security.ArtifactAuthz artifactAuthzId="LlmRunServicesADMIN" userGroupId="ADMIN"
+            artifactGroupId="LlmRunServices" authzTypeEnumId="AUTHZT_ALWAYS" authzActionEnumId="AUTHZA_ALL"/>
+
     <!-- Framework test entity used by skill/sim tests and Assist miss→sim live path. -->
     <moqui.security.ArtifactGroup artifactGroupId="LlmSimTestEntities" description="Framework test entities for LLM sim"/>
     <moqui.security.ArtifactGroupMember artifactGroupId="LlmSimTestEntities" artifactName="moqui.test.TestEntity"

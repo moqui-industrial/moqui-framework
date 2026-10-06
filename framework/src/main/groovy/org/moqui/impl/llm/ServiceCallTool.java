@@ -56,7 +56,9 @@ public class ServiceCallTool implements LlmTool {
     private final Map<String, Object> schema;
     private final String description;
 
-    public ServiceCallTool(String serviceName, String functionName) {
+    public ServiceCallTool(String serviceName, String functionName) { this(serviceName, functionName, null); }
+
+    public ServiceCallTool(String serviceName, String functionName, String description) {
         if (serviceName == null || serviceName.isBlank())
             throw new IllegalArgumentException("serviceName is required");
         this.serviceName = serviceName;
@@ -73,7 +75,7 @@ public class ServiceCallTool implements LlmTool {
         }
         ServiceDefinition sd = lookupService(serviceName);
         this.schema = schemaFor(sd);
-        this.description = "Call Moqui service " + serviceName;
+        this.description = description != null && !description.isBlank() ? description : "Call Moqui service " + serviceName;
     }
 
     public static String encodeFunctionName(String serviceName) {

@@ -77,6 +77,7 @@ public class LlmClientImpl implements LlmClient {
     /** Keeps the lease of the run this client executes alive; null when there is no durable run. */
     private LlmRunLease runLease = null;
     private LlmConversationImpl detachedWriter = null;
+    private boolean runAttached = false;
     long activeRunFence = 0L;
     List<LlmItem> activeRunContext = null;
     List<LlmItem> remotePendingItems = null;
@@ -1071,6 +1072,8 @@ public class LlmClientImpl implements LlmClient {
 
     void beginDurableRun(List<LlmMessage> window, boolean resume) {
         if (!canPersistRun()) return;
+        // a run attached with attachRecoveredRun is continued, not recreated
+        if (runAttached) { runAttached = false; return; }
         if (resume && conversation != null) {
             Object storedRunId = conversation.getAttributes().get("activeLlmRunId");
             if (storedRunId != null) {
@@ -1302,6 +1305,7 @@ public class LlmClientImpl implements LlmClient {
 
     void attachRecoveredRun(Map<String, Object> stored) {
         applyEnvelope(stored.get("envelope"));
+        runAttached = true;
         activeRunId = stored.get("runId") != null ? stored.get("runId").toString() : null;
         activeRunFence = stored.get("fencingToken") instanceof Number
                 ? ((Number) stored.get("fencingToken")).longValue() : 0L;
@@ -1491,6 +1495,9 @@ public class LlmClientImpl implements LlmClient {
             return true;
         // another worker took the run over: stop instead of acting on a run this client no longer owns
         if (runLease != null && runLease.isLost()) return true;
+        // a background run has no conversation to carry the cancel flag: ask the run itself
+        if (conversation == null && activeRunId != null && ec != null && LlmRunStore.isCancelRequested(ec, activeRunId))
+            return true;
         LlmFacadeImpl f = facadeOrNull();
         return f != null && f.isCancelled(convId());
     }
@@ -1530,6 +1537,13 @@ public class LlmClientImpl implements LlmClient {
             if (ec.getLlm() instanceof LlmFacadeImpl) return (LlmFacadeImpl) ec.getLlm();
         } catch (Throwable ignored) { }
         return null;
+    }
+
+    /** A tool (suspend#CurrentLlmRun) put the run into a waiting state; the loop must stop without finishing it. */
+    boolean runSuspendedByTool() {
+        if (activeRunId == null || ec == null) return false;
+        String status = LlmRunStore.runStatus(ec, activeRunId);
+        return LlmRunStore.WAIT_CONFIRM.equals(status) || LlmRunStore.WAIT_CLIENT.equals(status);
     }
 
     boolean hasResumeResults() { return !resumeToolResults.isEmpty(); }
