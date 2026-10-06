@@ -18,6 +18,8 @@ import org.moqui.entity.EntityCondition
 import org.moqui.entity.EntityList
 import org.moqui.entity.EntityValue
 
+import org.moqui.llm.LlmContentPart
+import org.moqui.llm.LlmItem
 import java.sql.Timestamp
 
 /** Short-transaction persistence for LLM runs, checkpoints, recovery claims and tool invocations. */
@@ -37,8 +39,8 @@ public final class LlmRunStore {
         (QUEUED): [RUNNING, CANCELLED, FAILED] as Set,
         (RUNNING): [WAIT_CLIENT, WAIT_CONFIRM, WAIT_PROVIDER, COMPLETE, FAILED, CANCELLED] as Set,
         (WAIT_PROVIDER): [RUNNING, WAIT_CONFIRM, COMPLETE, FAILED, CANCELLED] as Set,
-        (WAIT_CLIENT): [RUNNING, RECOVERING, CANCELLED, FAILED] as Set,
-        (WAIT_CONFIRM): [RUNNING, RECOVERING, CANCELLED, FAILED] as Set,
+        (WAIT_CLIENT): [QUEUED, RUNNING, RECOVERING, CANCELLED, FAILED] as Set,
+        (WAIT_CONFIRM): [QUEUED, RUNNING, RECOVERING, CANCELLED, FAILED] as Set,
         (RECOVERING): [RUNNING, WAIT_CLIENT, WAIT_CONFIRM, COMPLETE, FAILED, CANCELLED] as Set,
         (COMPLETE): [] as Set, (FAILED): [] as Set, (CANCELLED): [] as Set
     ].asImmutable()
@@ -236,6 +238,101 @@ public final class LlmRunStore {
             result = runMap(run)
         }
         result
+    }
+
+    /**
+     * Queued to Running for a background worker: bumps the fencing token and takes a lease. Returns null when the run
+     * is not queued (already claimed, cancelled or finished), so two jobs for one run cannot both execute it.
+     */
+    static Map<String, Object> claimQueued(ExecutionContext ec, String runId, String workerId, int leaseSeconds) {
+        if (!workerId) throw new IllegalArgumentException('workerId is required')
+        Map<String, Object> result = null
+        isolated(ec) {
+            EntityValue run = ownedRun(ec, runId, true)
+            if (run.statusId != QUEUED || run.cancelRequested == 'Y') return
+            Timestamp now = ec.user.nowTimestamp
+            long nextFence = ((run.fencingToken ?: 0) as Number).longValue() + 1L
+            run.setAll([statusId: RUNNING, workerId: workerId, fencingToken: nextFence,
+                leaseUntil: new Timestamp(now.time + Math.max(leaseSeconds, 1) * 1000L),
+                startedDate: run.startedDate ?: now, lastUpdatedDate: now]).update()
+            appendStatus(ec, run, RUNNING, "Claimed by ${workerId}")
+            result = runMap(run)
+        }
+        result
+    }
+
+    /** Clears the lease of a run that is no longer running; a no-op when another worker holds a newer fence. */
+    static void releaseLease(ExecutionContext ec, String runId, String workerId, long fencingToken) {
+        isolated(ec) {
+            EntityValue run = ownedRun(ec, runId, true)
+            if (run.workerId != workerId || ((run.fencingToken ?: 0) as Number).longValue() != fencingToken) return
+            if (run.statusId == RUNNING || run.statusId == RECOVERING) return
+            run.setAll([workerId: null, leaseUntil: null, lastUpdatedDate: ec.user.nowTimestamp]).update()
+        }
+    }
+
+    static boolean isCancelRequested(ExecutionContext ec, String runId) {
+        EntityValue run = disabled(ec) {
+            ec.entity.find('moqui.llm.LlmRun').condition('runId', runId).selectField('cancelRequested,statusId')
+                .useCache(false).one()
+        }
+        run != null && (run.cancelRequested == 'Y' || run.statusId == CANCELLED)
+    }
+
+    static String runStatus(ExecutionContext ec, String runId) {
+        EntityValue run = disabled(ec) {
+            ec.entity.find('moqui.llm.LlmRun').condition('runId', runId).selectField('statusId').useCache(false).one()
+        }
+        run?.statusId
+    }
+
+    static void linkJobRun(ExecutionContext ec, String runId, String jobRunId) {
+        isolated(ec) {
+            EntityValue run = ownedRun(ec, runId, true)
+            run.setAll([jobRunId: jobRunId, lastUpdatedDate: ec.user.nowTimestamp]).update()
+        }
+    }
+
+    /**
+     * Records a human answer (run waiting for the client) or a decision (run waiting for confirmation) in the run
+     * trajectory and queues the run again. A rejection cancels it. Refuses while a tool invocation has an uncertain
+     * outcome: that needs reconciliation, not an answer. The XML services allow only the owner; a calling service that
+     * has done its own permission check may pass allowNonOwner.
+     */
+    static Map<String, Object> resumeWaiting(ExecutionContext ec, String runId, String kind, String text,
+            Boolean approved, boolean allowNonOwner = false) {
+        if (kind != 'answer' && kind != 'confirm') throw new IllegalArgumentException("Unknown resume kind ${kind}")
+        Map<String, Object> result
+        isolated(ec) {
+            EntityValue run = ownedRun(ec, runId, true, allowNonOwner)
+            String expected = kind == 'confirm' ? WAIT_CONFIRM : WAIT_CLIENT
+            if (run.statusId != expected)
+                throw new IllegalStateException("LLM run ${runId} is ${run.statusId}, not waiting for ${kind == 'confirm' ? 'confirmation' : 'an answer'}")
+            if (kind == 'confirm' && approved == null) throw new IllegalArgumentException('approved is required')
+            if (invocationsOf(ec, runId).any { it.statusId in ['LlmTiPlanned', 'LlmTiRunning', 'LlmTiUncertain'] })
+                throw new IllegalStateException("LLM run ${runId} has a tool invocation with an uncertain outcome; reconcile it first")
+            Timestamp now = ec.user.nowTimestamp
+            if (kind == 'confirm' && !approved) {
+                run.setAll([statusId: CANCELLED, cancelRequested: 'Y', completedDate: now, workerId: null, leaseUntil: null,
+                    lastUpdatedDate: now]).update()
+                appendStatus(ec, run, CANCELLED, "Rejected${text ? ': ' + text : ''}")
+                result = runMap(run)
+                return
+            }
+            String message = kind == 'confirm' ? "Confirmation: approved.${text ? ' ' + text : ''}" : text
+            if (!message) throw new IllegalArgumentException('text is required for an answer')
+            List<LlmItem> items = OpenResponsesCodec.itemsFromStored(parse(run.contextJson as String))
+            items.add(LlmItem.message('user', [LlmContentPart.inputText(message)]))
+            run.setAll([contextJson: json(items), checkpointJson: json([phase: 'ready_provider', resumedBy: kind]),
+                statusId: QUEUED, workerId: null, leaseUntil: null, lastUpdatedDate: now]).update()
+            appendStatus(ec, run, QUEUED, kind == 'confirm' ? 'Confirmed' : 'Answered')
+            result = runMap(run)
+        }
+        result
+    }
+
+    private static List<EntityValue> invocationsOf(ExecutionContext ec, String runId) {
+        disabled(ec) { ec.entity.find('moqui.llm.LlmToolInvocation').condition('runId', runId).useCache(false).list() }
     }
 
     static Map<String, Object> cancel(ExecutionContext ec, String runId) {
@@ -502,14 +599,14 @@ public final class LlmRunStore {
         [results: rows.collect { EntityValue row -> row.getMap() }]
     }
 
-    private static EntityValue ownedRun(ExecutionContext ec, String runId, boolean forUpdate) {
+    private static EntityValue ownedRun(ExecutionContext ec, String runId, boolean forUpdate, boolean anyOwner = false) {
         if (!runId) throw new IllegalArgumentException('runId is required')
         String userId = requireUser(ec)
         EntityValue run = disabled(ec) {
             ec.entity.find('moqui.llm.LlmRun').condition('runId', runId).forUpdate(forUpdate)
                 .useCache(false).one()
         }
-        if (run == null || (run.userId != userId && !ec.user.isInGroup('ADMIN')))
+        if (run == null || (run.userId != userId && !anyOwner && !ec.user.isInGroup('ADMIN')))
             throw new IllegalArgumentException('LLM run not found')
         run
     }
@@ -557,7 +654,7 @@ public final class LlmRunStore {
          envelope: run.envelopeJson ? parse(run.envelopeJson as String) : null,
          previousProviderResponseId: run.previousProviderResponseId, iteration: run.iteration,
          maxIterations: run.maxIterations, cancelRequested: run.cancelRequested == 'Y', workerId: run.workerId,
-         leaseUntil: run.leaseUntil, fencingToken: run.fencingToken, deadline: run.deadline,
+         jobRunId: run.jobRunId, leaseUntil: run.leaseUntil, fencingToken: run.fencingToken, deadline: run.deadline,
          errorMessage: run.errorMessage, createdDate: run.createdDate, startedDate: run.startedDate,
          lastUpdatedDate: run.lastUpdatedDate, completedDate: run.completedDate] as Map<String, Object>
     }

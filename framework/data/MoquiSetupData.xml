@@ -76,6 +76,13 @@ along with this software (see the LICENSE.md file). If not, see
         <parameters parameterName="limit" parameterValue="50"/>
     </moqui.service.job.ServiceJob>
 
+    <moqui.security.user.NotificationTopic topic="LlmRunEvents" description="LLM Run Stopped or Completed"
+            titleTemplate="LLM run ${parameters.runId} is ${results.statusId}" typeString="info" showAlert="Y" persistOnSend="Y"
+            isPrivate="Y" receiveNotifications="Y"/>
+    <!-- Ad hoc only (no cronExpression): started with ec.service.job("execute_LlmRun").parameter("runId", id).run() -->
+    <moqui.service.job.ServiceJob jobName="execute_LlmRun" description="Execute one durable LLM run"
+            serviceName="org.moqui.impl.LlmServices.execute#LlmRun" topic="LlmRunEvents" paused="N"/>
+
     <!-- Change paused to 'N' to run the EntitySync job -->
     <moqui.service.job.ServiceJob jobName="run_EntitySyncAll_frequent" description="Run All EntitySync"
             serviceName="org.moqui.impl.EntitySyncServices.run#EntitySyncAll" cronExpression="0 0/15 * * * ?" paused="Y"/>

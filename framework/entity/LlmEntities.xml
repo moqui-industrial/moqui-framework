@@ -370,6 +370,8 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="maxIterations" type="number-integer" not-null="true"/>
         <field name="cancelRequested" type="text-indicator" not-null="true"/>
         <field name="workerId" type="text-medium"/>
+        <field name="jobRunId" type="id"><description>Most recent ServiceJobRun that executes this run, if any.
+            No foreign key: runs and jobs stay decoupled.</description></field>
         <field name="leaseUntil" type="date-time"/>
         <field name="fencingToken" type="number-integer" not-null="true"/>
         <field name="deadline" type="date-time"/>

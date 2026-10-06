@@ -229,6 +229,15 @@ final class LlmAgentLoop {
                 recordServerResult(working, roundResults, call, executed, invocation, iteration);
             }
 
+            if (client.runSuspendedByTool()) {
+                LlmResponse suspended = client.toResponse(result, LlmFinishReason.TOOL_CALLS, start);
+                suspended.yielded = true;
+                suspended.httpStatus = 202;
+                suspended.toolResults = roundResults;
+                if (listener != null) listener.onComplete(suspended);
+                return suspended;
+            }
+
             if (!clientCalls.isEmpty()) {
                 if (!client.allowClientTools) {
                     for (LlmToolCall call : clientCalls) {

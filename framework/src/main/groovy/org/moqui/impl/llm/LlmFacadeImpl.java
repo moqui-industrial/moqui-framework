@@ -299,6 +299,8 @@ public class LlmFacadeImpl implements LlmFacade {
         public final boolean allowVueSfc;
         public final boolean summarizeConversation;
         public final List<BasicEntityAllow> allowedBasicEntities;
+        /** Services exposed as typed tools to durable runs (execute#LlmRun); not attached on the servlet. */
+        public List<ServiceAllow> allowedServices = Collections.emptyList();
 
         ProfileState(String name, MNode confNode, String url, String path, String endpointUrl, String apiKey,
                 String authHeaderName, String authHeaderValue, String model, String maxTokensParameter,
@@ -444,7 +446,14 @@ public class LlmFacadeImpl implements LlmFacade {
                 throw new LlmException("Could not load LLM protocol class " + protocolClass + " for profile " + name, t);
             }
 
-            return new ProfileState(name, node, url, path, endpointUrl, apiKey, authHeaderName, authHeaderValue,
+            List<ServiceAllow> allowedServices = new ArrayList<>();
+            for (MNode as : node.children("allowed-service")) {
+                String serviceName = as.attribute("name");
+                if (serviceName == null || serviceName.isBlank()) continue;
+                allowedServices.add(new ServiceAllow(serviceName.trim(), as.attribute("function-name"),
+                        as.attribute("description")));
+            }
+            ProfileState configured = new ProfileState(name, node, url, path, endpointUrl, apiKey, authHeaderName, authHeaderValue,
                     model, maxTokensParameter, allowTxOverHttp, timeoutSeconds, retryInitialSeconds, retryMax,
                     timeoutRetry, emptyRetries, contextLimitPolicy, maxTokens, temperature, logContent,
                     Collections.unmodifiableMap(extraHeaders), Collections.unmodifiableMap(extraQuery),
@@ -452,6 +461,8 @@ public class LlmFacadeImpl implements LlmFacade {
                     Collections.unmodifiableList(allowedPaths), allowWriteUi, ssePingSeconds,
                     systemLocation, allowClientSystem, allowBrowse, allowRunService, allowUnprefixedRequest,
                     allowEnterSim, allowVueSfc, summarizeConversation, Collections.unmodifiableList(allowedBasic));
+            configured.allowedServices = Collections.unmodifiableList(allowedServices);
+            return configured;
         }
 
         public static String defaultPathForProtocol(String protocolClass) {
@@ -529,6 +540,17 @@ public class LlmFacadeImpl implements LlmFacade {
         public AllowedPath(String prefix, String methodsCsv) {
             this.prefix = prefix;
             this.methodsCsv = methodsCsv;
+        }
+    }
+
+    public static final class ServiceAllow {
+        public final String serviceName;
+        public final String functionName;
+        public final String description;
+        ServiceAllow(String serviceName, String functionName, String description) {
+            this.serviceName = serviceName;
+            this.functionName = functionName != null && !functionName.isBlank() ? functionName.trim() : null;
+            this.description = description != null && !description.isBlank() ? description.trim() : null;
         }
     }
 

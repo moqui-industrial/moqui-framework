@@ -292,6 +292,62 @@ along with this software (see the LICENSE.md file). If not, see
         <out-parameters><parameter name="run" type="Map"/></out-parameters>
         <actions><script>run = org.moqui.impl.llm.LlmRunStore.createRun(ec, context)</script></actions>
     </service>
+    <service verb="start" noun="LlmRun" authenticate="true" allow-remote="false" transaction="ignore">
+        <description>Create a queued run from an objective and start execute_LlmRun for it as the current user.</description>
+        <in-parameters>
+            <parameter name="profileName" required="true"/><parameter name="objective" required="true"/>
+            <parameter name="parentRunId"/><parameter name="maxIterations" type="Integer"/>
+            <parameter name="deadline" type="Timestamp"/>
+        </in-parameters>
+        <out-parameters><parameter name="run" type="Map"/></out-parameters>
+        <actions><script>run = org.moqui.impl.llm.LlmRunExecutor.start(ec, context)</script></actions>
+    </service>
+    <service verb="execute" noun="LlmRun" authenticate="true" allow-remote="false" transaction="ignore">
+        <description>Body of the execute_LlmRun job: run one queued LlmRun to completion, failure, cancellation or a
+            wait for a human. Only the run owner (the job thread is logged in as the initiator) may execute it.</description>
+        <in-parameters><parameter name="runId" required="true"/></in-parameters>
+        <out-parameters>
+            <parameter name="runId"/><parameter name="statusId"/><parameter name="executed" type="Boolean"/>
+            <parameter name="iteration" type="Integer"/><parameter name="reason"/><parameter name="content"/>
+        </out-parameters>
+        <actions><script>context.putAll(org.moqui.impl.llm.LlmRunExecutor.execute(ec, runId))</script></actions>
+    </service>
+    <service verb="answer" noun="LlmRun" authenticate="true" allow-remote="false" transaction="ignore">
+        <description>Owner answers a run waiting for the client; the answer joins the run trajectory and the run is
+            queued and dispatched again.</description>
+        <in-parameters><parameter name="runId" required="true"/><parameter name="text" required="true"/></in-parameters>
+        <out-parameters><parameter name="run" type="Map"/></out-parameters>
+        <actions><script>
+            run = org.moqui.impl.llm.LlmRunStore.resumeWaiting(ec, runId, 'answer', text, null)
+            org.moqui.impl.llm.LlmRunExecutor.dispatch(ec, runId)
+            run = org.moqui.impl.llm.LlmRunStore.getRun(ec, runId)
+        </script></actions>
+    </service>
+    <service verb="confirm" noun="LlmRun" authenticate="true" allow-remote="false" transaction="ignore">
+        <description>Owner approves or rejects a run waiting for confirmation. Approval joins the decision to the run
+            trajectory, queues and dispatches the run; rejection cancels it.</description>
+        <in-parameters>
+            <parameter name="runId" required="true"/><parameter name="approved" type="Boolean" required="true"/>
+            <parameter name="comments"/>
+        </in-parameters>
+        <out-parameters><parameter name="run" type="Map"/></out-parameters>
+        <actions><script>
+            run = org.moqui.impl.llm.LlmRunStore.resumeWaiting(ec, runId, 'confirm', comments, approved)
+            if (approved) org.moqui.impl.llm.LlmRunExecutor.dispatch(ec, runId)
+            run = org.moqui.impl.llm.LlmRunStore.getRun(ec, runId)
+        </script></actions>
+    </service>
+    <service verb="suspend" noun="CurrentLlmRun" authenticate="true" allow-remote="true" transaction="ignore">
+        <description>Called as a tool by the agent itself: stop the current run and wait for the owner (confirmation
+            or answer). The agent loop ends after the current tool round. Remote so a profile can expose it as a
+            typed tool (allowed-service); outside a running agent loop it only throws.</description>
+        <in-parameters>
+            <parameter name="statusId" default-value="LlmRunWaitConfirm"/>
+            <parameter name="message"/>
+        </in-parameters>
+        <out-parameters><parameter name="run" type="Map"/></out-parameters>
+        <actions><script>run = org.moqui.impl.llm.LlmRunExecutor.suspendCurrent(ec, statusId, message)</script></actions>
+    </service>
     <service verb="get" noun="LlmRun" authenticate="true" allow-remote="false">
         <in-parameters><parameter name="runId" required="true"/></in-parameters>
         <out-parameters><parameter name="run" type="Map"/></out-parameters>

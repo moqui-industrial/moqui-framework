@@ -43,10 +43,40 @@ They record the answer or decision in the status journal and checkpoint, move th
 5. Durability. A ServiceJob started with `.run()` waits in an in-memory queue, so a restart loses it and leaves a `ServiceJobRun` without `endTime`. `LlmRun` stays the source of truth. `recover#AllLlmRuns` is extended to re-dispatch `LlmRunQueued` runs that have no live job (the run has no `jobRunId`, or its `ServiceJobRun` has ended or is older than a grace period) in addition to the expired-lease runs it already recovers.
 6. Concurrency. `execute#LlmRun` takes a semaphore sized from the profile's `pool-max`, so executor runs cannot starve the shared `jobWorkerPool`. A run that cannot get a permit goes back to `LlmRunQueued` and is picked up by the recovery job.
 
-## 3. Tests
+## 3. Implementation
 
-Offline, with the fake provider used by the Open Responses client tests: queued run executes in a job as its owner; the job thread user equals the owner; a run that waits ends the job; `confirm#LlmRun` resumes it; cancel during execution stops at the next iteration; a notification is emitted on `LlmRunEvents`; a queued run without a live job is re-dispatched by recovery; the semaphore limits concurrent runs.
+| Piece | Where |
+| --- | --- |
+| `LlmRun.jobRunId` | `LlmEntities.xml`; also returned by `LlmRunStore.getRun` |
+| `claimQueued`, `releaseLease`, `resumeWaiting`, `isCancelRequested`, `linkJobRun`; transitions `LlmRunWaitClient`/`LlmRunWaitConfirm` to `LlmRunQueued` | `LlmRunStore.groovy` |
+| `LlmRunExecutor.start/dispatch/execute/suspendCurrent`, lease heartbeat, per-profile permits | `LlmRunExecutor.groovy` |
+| Services `start`, `execute`, `answer`, `confirm`, `suspend` (noun `LlmRun` / `CurrentLlmRun`) | `LlmServices.xml` |
+| ServiceJob `execute_LlmRun` and notification topic `LlmRunEvents` | `MoquiSetupData.xml` |
+| ADMIN authorization on those services | `LlmTypeData.xml` (group `LlmRunServices`) |
+| Re-dispatch of orphaned queued runs | `LlmRecoveryWorker.orphanedQueued/redispatch`, called from `recoverAll` |
+| Profile `allowed-service` parsing (`ProfileState.allowedServices`) and `ServiceCallTool` description | `LlmFacadeImpl`, `ServiceCallTool` |
+| Loop stops after a tool round when the run was put into a waiting state; background cancel check; an attached run is continued, not recreated | `LlmAgentLoop`, `LlmClientImpl` |
 
-## 4. Open design point
+How it behaves:
 
-`execute#LlmRun` must not call `LlmClientImpl.call()` blindly for a run whose `contextJson` is empty. A queued run created from an `objective` has no items yet, so the executor builds the first input from `objective` before the loop starts.
+- `start#LlmRun` creates a queued run whose trajectory already holds the objective as a user item, then dispatches the job as the run owner.
+- `execute#LlmRun` refuses a run that is not queued, takes a permit from a semaphore sized by the profile `pool-max` (a run that cannot get one stays queued), claims the run (fence + 60 s lease), starts a heartbeat that renews the lease every 20 s so `recover#AllLlmRuns` does not take a live run over, attaches the stored trajectory to a client and calls the agent loop outside any transaction. Tools: the built-in ones the profile allows (`find_skill`, `browse`, `run_service`, `enter_sim`, `find_basic`) and one typed tool per `allowed-service`. A failure marks the run failed and is rethrown so the job records the error; a cancellation does not.
+- A tool service ends the run's active period by calling `suspend#CurrentLlmRun` (`LlmRunWaitConfirm` or `LlmRunWaitClient`). The loop checks the run status after each tool round, returns a yielded response without finishing the run, the lease is released and the job ends, which sends the `LlmRunEvents` notification to the initiator.
+- `confirm#LlmRun` (approved or not) and `answer#LlmRun` are owner only. Approval or an answer appends a user item to the trajectory (`Confirmation: approved. <comments>` or the answer), sets the run queued with checkpoint phase `ready_provider` and dispatches a new job. Rejection cancels the run and starts nothing. Both refuse while a tool invocation is planned, running or uncertain. A calling component that did its own permission check can use `LlmRunStore.resumeWaiting(..., allowNonOwner = true)`.
+- Cancelling a background run (`cancel#LlmRun`) is noticed at the next `throwIfCancelled`, so within one provider call or tool.
+- `recover#AllLlmRuns` also re-dispatches runs that stayed queued for more than 120 s with no live job (never started, or the linked `ServiceJobRun` ended).
+
+## 4. Findings that changed the plan
+
+1. The profile element `allowed-service` is in the XSD but was never read: no code turned it into a tool. It is now parsed into `ProfileState.allowedServices`, and only `execute#LlmRun` attaches those tools (the servlet still does not, as the XSD says).
+2. `ServiceCallTool` refuses services without `allow-remote="true"`. A service used as a typed tool must be remote-allowed, so it has to protect itself. `suspend#CurrentLlmRun` is remote-allowed and only throws outside an agent loop.
+3. Starting a job checks the caller's authorization on the service; `execute#LlmRun` and friends need an `ArtifactAuthz` for the user group (seed data grants ADMIN only; the executor component grants its own groups).
+4. The run is linked to the job after `run()` returns, so a very fast job can finish before `jobRunId` is written; nothing depends on the order.
+5. Only `LlmContLocal` runs are supported: a remote (`previous_response_id`) run would need the pending items re-sent after a wait.
+6. Background runs use the item trajectory (`activeRunContext`). Protocols that rebuild requests from the message window only (chat completions) do not see a resumed trajectory; the executor profile must use a Responses protocol.
+
+## 5. Tests
+
+`LlmRunExecutionTests` (fake provider, real ServiceJob): queued run executes as its owner and completes with a notification; run that asks for confirmation ends its job and `confirm#LlmRun` resumes it with the decision in its trajectory; an answer resumes a run waiting for the client; a rejection cancels and calls the provider no more; cancelling a running run stops it, a duplicate `execute` does nothing; an orphaned queued run is re-dispatched by recovery; the profile `pool-max` keeps a second run queued while the first runs.
+
+`LlmRunStoreTests` still covers the store; all `Llm*`, `A2A*` and `org.moqui.impl.llm.*` tests pass (338 run, 4 optional/live tests skipped).
