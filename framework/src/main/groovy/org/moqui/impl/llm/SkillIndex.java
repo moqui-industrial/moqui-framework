@@ -47,6 +47,11 @@ public class SkillIndex {
     public static class SkillDoc {
         public String name, title, description, body, risk, sourceLocation, skillId, statusId, provenanceId;
         public Map<String, String> frontMatter = new LinkedHashMap<>();
+        /** Profile names allowed to see this skill; null or empty means every profile. */
+        public List<String> profiles;
+        /** Folder skills only: location of the skill folder and the files in it, relative to it. */
+        public String folderLocation;
+        public List<String> files;
     }
 
     public static SkillDoc parseMarkdown(String text, String sourceLocation) {
@@ -57,18 +62,8 @@ public class SkillIndex {
         if (t.startsWith("---\n")) {
             int end = t.indexOf("\n---", 4);
             if (end > 0) {
-                String fm = t.substring(4, end);
+                parseFrontMatter(t.substring(4, end), doc.frontMatter);
                 doc.body = t.substring(end + 4).trim();
-                for (String line : fm.split("\n")) {
-                    int colon = line.indexOf(':');
-                    if (colon <= 0) continue;
-                    String k = line.substring(0, colon).trim();
-                    String v = line.substring(colon + 1).trim();
-                    if (v.startsWith("[") && v.endsWith("]")) v = v.substring(1, v.length() - 1);
-                    if ((v.startsWith("\"") && v.endsWith("\"")) || (v.startsWith("'") && v.endsWith("'")))
-                        v = v.substring(1, v.length() - 1);
-                    doc.frontMatter.put(k, v);
-                }
             } else {
                 doc.body = t;
             }
@@ -76,22 +71,116 @@ public class SkillIndex {
             doc.body = t;
         }
         doc.name = nz(doc.frontMatter.get("name"));
-        if (doc.name.isEmpty() && sourceLocation != null) {
-            int slash = sourceLocation.lastIndexOf('/');
-            String file = slash >= 0 ? sourceLocation.substring(slash + 1) : sourceLocation;
-            if (file.endsWith(".md")) file = file.substring(0, file.length() - 3);
-            doc.name = file;
-        }
+        if (doc.name.isEmpty() && sourceLocation != null) doc.name = nameFromLocation(sourceLocation);
         doc.title = nz(doc.frontMatter.get("title"));
         if (doc.title.isEmpty()) doc.title = doc.name;
         doc.description = nz(doc.frontMatter.get("description"));
         doc.risk = nz(doc.frontMatter.get("risk"));
         if (doc.risk.isEmpty()) doc.risk = "confirm";
+        doc.profiles = splitList(doc.frontMatter.get("profiles"));
         doc.statusId = "LsksActive";
         doc.provenanceId = "LskpHuman";
         return doc;
     }
 
+    /** foo.md gives foo; foo/SKILL.md gives foo. */
+    static String nameFromLocation(String sourceLocation) {
+        String loc = sourceLocation;
+        while (loc.endsWith("/")) loc = loc.substring(0, loc.length() - 1);
+        int slash = loc.lastIndexOf('/');
+        String file = slash >= 0 ? loc.substring(slash + 1) : loc;
+        if ("SKILL.md".equals(file) && slash > 0) {
+            String parent = loc.substring(0, slash);
+            int ps = parent.lastIndexOf('/');
+            return ps >= 0 ? parent.substring(ps + 1) : parent;
+        }
+        if (file.endsWith(".md")) file = file.substring(0, file.length() - 3);
+        return file;
+    }
+
+    /**
+     * Front matter subset used by shipped skills: "key: value" lines, quoted or [a, b] values, and the Agent Skills
+     * forms: folded or literal block scalars (&gt; |), plain scalars continued on indented lines, and "- item" lists.
+     * Nested mappings (for example metadata:) are skipped. Lists are stored comma separated.
+     */
+    static void parseFrontMatter(String fm, Map<String, String> out) {
+        String[] lines = fm.split("\n", -1);
+        int i = 0;
+        while (i < lines.length) {
+            String line = lines[i];
+            int colon = line.indexOf(':');
+            boolean indented = !line.isEmpty() && Character.isWhitespace(line.charAt(0));
+            if (colon <= 0 || indented || line.startsWith("-")) { i++; continue; }
+            String k = line.substring(0, colon).trim();
+            String v = line.substring(colon + 1).trim();
+            i++;
+            List<String> cont = new ArrayList<>();
+            while (i < lines.length && (lines[i].isEmpty() || Character.isWhitespace(lines[i].charAt(0))
+                    || lines[i].startsWith("- "))) {
+                cont.add(lines[i]);
+                i++;
+            }
+            while (!cont.isEmpty() && cont.get(cont.size() - 1).trim().isEmpty()) cont.remove(cont.size() - 1);
+            if (v.startsWith(">") || v.startsWith("|")) {
+                boolean literal = v.startsWith("|");
+                StringBuilder sb = new StringBuilder();
+                for (String c : cont) {
+                    String piece = c.trim();
+                    if (sb.length() > 0) sb.append(literal ? "\n" : (piece.isEmpty() ? "\n" : " "));
+                    sb.append(piece);
+                }
+                out.put(k, sb.toString().trim());
+            } else if (v.isEmpty()) {
+                List<String> items = new ArrayList<>();
+                for (String c : cont) {
+                    String piece = c.trim();
+                    if (piece.startsWith("- ")) items.add(unquote(piece.substring(2).trim()));
+                }
+                if (!items.isEmpty()) out.put(k, String.join(", ", items));
+                // otherwise a nested mapping or an empty value: not used by the loader
+            } else {
+                if (v.startsWith("[") && v.endsWith("]")) v = v.substring(1, v.length() - 1);
+                else {
+                    StringBuilder sb = new StringBuilder(v);
+                    for (String c : cont) if (!c.trim().isEmpty()) sb.append(' ').append(c.trim());
+                    v = sb.toString();
+                }
+                out.put(k, unquote(v));
+            }
+        }
+    }
+
+    private static String unquote(String v) {
+        if (v.length() >= 2 && ((v.startsWith("\"") && v.endsWith("\"")) || (v.startsWith("'") && v.endsWith("'"))))
+            return v.substring(1, v.length() - 1);
+        return v;
+    }
+
+    private static List<String> splitList(String v) {
+        if (v == null || v.isBlank()) return null;
+        List<String> out = new ArrayList<>();
+        for (String part : v.split(",")) {
+            String p = unquote(part.trim());
+            if (!p.isEmpty()) out.add(p);
+        }
+        return out.isEmpty() ? null : out;
+    }
+
+    /** A skill without profiles is visible to every profile; one with profiles only to those. */
+    public static boolean visibleTo(SkillDoc doc, String profileName) {
+        if (doc == null) return false;
+        if (doc.profiles == null || doc.profiles.isEmpty()) return true;
+        return profileName != null && doc.profiles.contains(profileName);
+    }
+
+    /** Largest file listed for a folder skill; set -Dmoqui.llm.skill.file.max.bytes to change. */
+    static long maxSkillFileBytes() {
+        try { return Long.parseLong(System.getProperty("moqui.llm.skill.file.max.bytes", "262144")); }
+        catch (NumberFormatException e) { return 262144L; }
+    }
+    static final int MAX_SKILL_FILES = 500;
+
+    /** Every shipped skill, whatever its profiles. Use {@link #scanShipped(ExecutionContext, String)} to filter. */
     public static List<SkillDoc> scanShipped(ExecutionContext ec) {
         List<SkillDoc> out = new ArrayList<>();
         if (ec == null || ec.getFactory() == null) return out;
@@ -101,22 +190,66 @@ public class SkillIndex {
             String loc = e.getValue();
             if (loc == null) continue;
             String skillDir = loc.endsWith("/") ? loc + "skill" : loc + "/skill";
-            try {
-                ResourceReference dir = ec.getResource().getLocationReference(skillDir);
-                if (dir == null || !dir.getExists() || !dir.isDirectory()) continue;
-                for (ResourceReference child : dir.getDirectoryEntries()) {
-                    if (child == null) continue;
-                    String name = child.getFileName();
-                    if (name == null || !name.endsWith(".md")) continue;
-                    String text = child.getText();
-                    SkillDoc doc = parseMarkdown(text, child.getLocation());
-                    if (doc.name != null && !doc.name.isEmpty()) out.add(doc);
-                }
-            } catch (Throwable t) {
-                if (logger.isDebugEnabled()) logger.debug("Skill scan skipped for " + skillDir + ": " + t.getMessage());
-            }
+            scanSkillDir(ec, skillDir, out);
         }
         return out;
+    }
+
+    /** Reads flat skill/*.md files and skill/&lt;name&gt;/SKILL.md folders from one skill directory. */
+    static void scanSkillDir(ExecutionContext ec, String skillDir, List<SkillDoc> out) {
+        try {
+            ResourceReference dir = ec.getResource().getLocationReference(skillDir);
+            if (dir == null || !dir.getExists() || !dir.isDirectory()) return;
+            for (ResourceReference child : dir.getDirectoryEntries()) {
+                if (child == null) continue;
+                String name = child.getFileName();
+                if (name == null) continue;
+                SkillDoc doc = null;
+                if (child.isDirectory()) {
+                    ResourceReference skillFile = child.getChild("SKILL.md");
+                    if (skillFile != null && skillFile.getExists() && skillFile.isFile()) {
+                        doc = parseMarkdown(skillFile.getText(), skillFile.getLocation());
+                        doc.folderLocation = child.getLocation();
+                        doc.files = listSkillFiles(child);
+                    }
+                } else if (name.endsWith(".md")) {
+                    doc = parseMarkdown(child.getText(), child.getLocation());
+                }
+                if (doc != null && doc.name != null && !doc.name.isEmpty()) out.add(doc);
+            }
+        } catch (Throwable t) {
+            if (logger.isDebugEnabled()) logger.debug("Skill scan skipped for " + skillDir + ": " + t.getMessage());
+        }
+    }
+
+    /** Shipped skills the profile may see. A null profile sees only skills without a profiles restriction. */
+    public static List<SkillDoc> scanShipped(ExecutionContext ec, String profileName) {
+        List<SkillDoc> out = new ArrayList<>();
+        for (SkillDoc doc : scanShipped(ec)) if (visibleTo(doc, profileName)) out.add(doc);
+        return out;
+    }
+
+    /** Files under a skill folder, relative paths, sorted. Skips agents/ (tool metadata), dot files and big files. */
+    static List<String> listSkillFiles(ResourceReference folder) {
+        List<String> out = new ArrayList<>();
+        collectSkillFiles(folder, "", out, maxSkillFileBytes());
+        Collections.sort(out);
+        return out;
+    }
+
+    private static void collectSkillFiles(ResourceReference dir, String prefix, List<String> out, long maxBytes) {
+        for (ResourceReference child : dir.getDirectoryEntries()) {
+            if (out.size() >= MAX_SKILL_FILES) return;
+            String name = child.getFileName();
+            if (name == null || name.startsWith(".")) continue;
+            if (child.isDirectory()) {
+                if (prefix.isEmpty() && "agents".equals(name)) continue;
+                collectSkillFiles(child, prefix + name + "/", out, maxBytes);
+            } else if (!(prefix.isEmpty() && "SKILL.md".equals(name))) {
+                if (child.getSize() > maxBytes) continue;
+                out.add(prefix + name);
+            }
+        }
     }
 
     /**
@@ -125,10 +258,13 @@ public class SkillIndex {
      * with the same name. A proposed row is selectable when nothing stronger has that name.
      * Superseded / rejected / deprecated rows are not selectable.
      */
-    public static SkillDoc getByName(ExecutionContext ec, String name) {
+    public static SkillDoc getByName(ExecutionContext ec, String name) { return getByName(ec, name, null); }
+
+    /** As {@link #getByName(ExecutionContext, String)} but a shipped skill restricted by profiles needs a matching profile. */
+    public static SkillDoc getByName(ExecutionContext ec, String name, String profileName) {
         if (name == null || name.isBlank()) return null;
         String n = name.trim();
-        SkillDoc shipped = shippedByName(ec, n);
+        SkillDoc shipped = shippedByName(ec, n, profileName);
         SkillDoc entity = entityByName(ec, n);
         return prefer(shipped, entity);
     }
@@ -139,11 +275,16 @@ public class SkillIndex {
      * {@link #getByName} still returns one when select asks for it and the name is not reserved.
      */
     public static List<SkillDoc> retrieve(ExecutionContext ec, String query, int limit) {
+        return retrieve(ec, query, limit, null);
+    }
+
+    public static List<SkillDoc> retrieve(ExecutionContext ec, String query, int limit, String profileName) {
         if (limit <= 0) limit = DEFAULT_LIMIT;
         String q = query == null ? "" : query.toLowerCase(Locale.ROOT);
-        List<SkillDoc> shipped = scanShipped(ec);
+        // names of every shipped skill stay reserved even when this profile cannot see them
         java.util.Set<String> shippedNames = new java.util.HashSet<>();
-        for (SkillDoc doc : shipped) if (doc.name != null) shippedNames.add(doc.name);
+        for (SkillDoc doc : scanShipped(ec)) if (doc.name != null) shippedNames.add(doc.name);
+        List<SkillDoc> shipped = scanShipped(ec, profileName);
         List<Scored> scored = new ArrayList<>();
         for (SkillDoc doc : shipped) {
             int s = score(doc, q);
@@ -190,7 +331,7 @@ public class SkillIndex {
     public static boolean nameReserved(ExecutionContext ec, String name) {
         if (name == null || name.isBlank()) return false;
         String n = name.trim();
-        if (shippedByName(ec, n) != null) return true;
+        for (SkillDoc doc : scanShipped(ec)) if (n.equals(doc.name)) return true;
         SkillDoc entity = entityByName(ec, n);
         return entity != null && "LsksActive".equals(entity.statusId) && isHumanOrWorld(entity);
     }
@@ -211,8 +352,8 @@ public class SkillIndex {
         return doc != null && ("LsksActive".equals(doc.statusId) || "LsksProposed".equals(doc.statusId));
     }
 
-    private static SkillDoc shippedByName(ExecutionContext ec, String name) {
-        for (SkillDoc doc : scanShipped(ec)) {
+    private static SkillDoc shippedByName(ExecutionContext ec, String name, String profileName) {
+        for (SkillDoc doc : scanShipped(ec, profileName)) {
             if (name.equals(doc.name)) return doc;
         }
         return null;
@@ -252,8 +393,11 @@ public class SkillIndex {
         return section.isEmpty() ? null : section;
     }
     public static String activeWidgetText(ExecutionContext ec, String skillName) {
+        return activeWidgetText(ec, skillName, null);
+    }
+    public static String activeWidgetText(ExecutionContext ec, String skillName, String profileName) {
         if (skillName == null || skillName.isBlank() || ec == null) return null;
-        SkillDoc doc = getByName(ec, skillName);
+        SkillDoc doc = getByName(ec, skillName, profileName);
         if (doc == null) return null;
         return widgetsSection(doc.body);
     }
@@ -269,7 +413,10 @@ public class SkillIndex {
      * not one of the three procedure slots.
      */
     public static String formatInjectForQuery(ExecutionContext ec, String query) {
-        List<SkillDoc> found = retrieve(ec, query, 15);
+        return formatInjectForQuery(ec, query, null);
+    }
+    public static String formatInjectForQuery(ExecutionContext ec, String query, String profileName) {
+        List<SkillDoc> found = retrieve(ec, query, 15, profileName);
         List<Map<String, Object>> skills = new ArrayList<>();
         List<Map<String, Object>> references = new ArrayList<>();
         if (found != null) {

@@ -120,7 +120,7 @@ final class SkillRiskGate {
     }
 
     private static String riskOf(LlmClientImpl client, String skillName) {
-        SkillIndex.SkillDoc doc = SkillIndex.getByName(client.ec, skillName);
+        SkillIndex.SkillDoc doc = SkillIndex.getByName(client.ec, skillName, client.profile.name);
         String risk = doc != null && doc.risk != null ? doc.risk.trim().toLowerCase(Locale.ROOT) : "";
         if ("reversible".equals(risk) || "irreversible".equals(risk)) return risk;
         return "confirm";

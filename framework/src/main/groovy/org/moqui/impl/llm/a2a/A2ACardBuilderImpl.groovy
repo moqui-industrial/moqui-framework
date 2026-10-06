@@ -63,7 +63,7 @@ final class A2ACardBuilderImpl {
         }
         // hard cap: the extended card is built per request from the skills this user can see
         int skillLimit = Math.min(Math.max(options.skillLimit != null ? options.skillLimit as int : MAX_SKILLS, 1), MAX_SKILLS)
-        List<SkillIndex.SkillDoc> docs = SkillIndex.retrieve(ec, '', skillLimit)
+        List<SkillIndex.SkillDoc> docs = SkillIndex.retrieve(ec, '', skillLimit, options.profile as String)
         List<Map> skills = docs.collect { SkillIndex.SkillDoc doc ->
             List<String> examples = (doc.body ?: '').readLines().collect { it.trim() }
                 .findAll { it && !it.startsWith('#') }.take(3)
