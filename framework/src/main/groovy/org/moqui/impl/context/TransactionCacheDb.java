@@ -85,6 +85,29 @@ public class TransactionCacheDb implements EntityTxCache {
     }
 
     public boolean isHold() { return hold; }
+
+    /**
+     * What the overlay holds relative to the real database: one entry per created, updated or deleted row with its
+     * entity name and primary key. Read the values with a normal find while the overlay is still active.
+     */
+    public List<Map<String, Object>> describeChanges() {
+        List<Map<String, Object>> out = new ArrayList<>();
+        describe(out, "create", dirtyCreateKeys);
+        describe(out, "update", dirtyUpdateKeys);
+        describe(out, "delete", tombstoneKeys);
+        return out;
+    }
+    private static void describe(List<Map<String, Object>> out, String operation, Set<Map<String, Object>> keys) {
+        for (Map<String, Object> key : keys) {
+            Map<String, Object> pk = new LinkedHashMap<>(key);
+            Object entityName = pk.remove("_entityName");
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("operation", operation);
+            row.put("entityName", entityName);
+            row.put("pk", pk);
+            out.add(row);
+        }
+    }
     public boolean isBypass() { return bypassDepth.get() > 0; }
     public void beginBypass() { bypassDepth.set(bypassDepth.get() + 1); }
     public void endBypass() {

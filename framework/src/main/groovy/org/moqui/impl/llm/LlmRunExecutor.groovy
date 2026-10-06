@@ -55,14 +55,14 @@ class LlmRunExecutor {
     }
 
     /** Starts execute_LlmRun for a queued run. The job always runs as the run owner, whoever calls this. */
-    static String dispatch(ExecutionContext ec, String runId) {
-        Map<String, Object> run = LlmRunStore.getRun(ec, runId)
+    static String dispatch(ExecutionContext ec, String runId, boolean anyOwner = false) {
+        Map<String, Object> run = LlmRunStore.getRun(ec, runId, anyOwner)
         if (run.statusId != LlmRunStore.QUEUED) throw new IllegalStateException("LLM run ${runId} is ${run.statusId}, not queued")
         String jobRunId = null
         asUser(ec, run.userId as String) {
             jobRunId = ec.service.job(JOB_NAME).parameter('runId', runId).run()
         }
-        LlmRunStore.linkJobRun(ec, runId, jobRunId)
+        LlmRunStore.linkJobRun(ec, runId, jobRunId, anyOwner)
         jobRunId
     }
 
@@ -168,6 +168,19 @@ class LlmRunExecutor {
         if (client == null || client.activeRunId == null)
             throw new IllegalStateException('Not called from inside a durable LLM run')
         LlmRunStore.transition(ec, client.activeRunId, statusId, message)
+    }
+
+    /**
+     * The durable run the calling tool service belongs to, for services that must only act inside an agent run.
+     * Throws when called from anywhere else (screen, REST, another thread).
+     */
+    static Map<String, Object> currentRun(ExecutionContext ec) {
+        LlmClientImpl client = LlmAgentLoop.currentClient()
+        if (client == null || client.activeRunId == null)
+            throw new IllegalStateException('Not called from inside a durable LLM run')
+        Map<String, Object> run = LlmRunStore.getRun(ec, client.activeRunId)
+        if (run.userId != ec.user.userId) throw new IllegalStateException('The run belongs to another user')
+        run
     }
 
     /** Runs the closure as another user (the run owner) and restores the caller afterwards. */
