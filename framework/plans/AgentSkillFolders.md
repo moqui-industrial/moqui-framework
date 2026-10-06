@@ -9,17 +9,21 @@ Scope: series A of the Agent Executor work. Changes `SkillIndex`, `FindSkillTool
 
 ## Front matter
 
-Single-line `key: value`, quoted values and `[a, b]` lists keep working. Added, from the Agent Skills standard:
+Folder skills follow the Agent Skills specification (https://agentskills.io/specification). The specification publishes no separate JSON Schema file, so `SkillIndex.validateAgentSkill` implements its rules, and a folder skill that breaks any of them is skipped with a warning:
 
-- block scalars (`>` folded, `|` literal) and plain values continued on indented lines;
-- `- item` lists;
-- nested mappings such as `metadata:` are skipped.
+- `name` required, at most 64 characters, lowercase letters and digits with single hyphens, not starting or ending with one, equal to the folder name;
+- `description` required, at most 1024 characters;
+- `compatibility` optional, 1 to 500 characters;
+- `license`, `metadata` (string to string map) and `allowed-tools` (space separated) optional;
+- no other top-level field.
 
-Lists are stored comma separated in `frontMatter`. New optional key `profiles` (list of LLM profile names).
+Moqui extensions therefore live under `metadata` with a `moqui-` prefix: `moqui-risk`, `moqui-profiles` (space or comma separated), `moqui-services`, `moqui-screens`. Flat `skill/*.md` files are not part of the specification and keep their top-level `risk`, `profiles`, `services`, `screens` keys; single-line values, quotes and `[a, b]` lists keep working.
+
+The parser reads folded and literal block scalars, plain values continued on indented lines, `- item` lists and one level of nested mapping (`metadata:`, kept as `metadata.<key>`).
 
 ## Profile filtering
 
-A skill with `profiles` is visible only to those profiles, in `retrieve`, `getByName`, the injected catalog (`formatInjectForQuery`), `activeWidgetText`, the risk gate and the A2A extended card (`options.profile`). A skill without `profiles` is visible to every profile. Callers that do not know a profile (the old method signatures, or a null profile) see only unrestricted skills. `nameReserved` and the sim shadowing check still consider every shipped skill, so a hidden skill's name cannot be taken by a proposed one.
+A skill with `moqui-profiles` (or top-level `profiles` in a flat file) is visible only to those profiles, in `retrieve`, `getByName`, the injected catalog (`formatInjectForQuery`), `activeWidgetText`, the risk gate and the A2A extended card (`options.profile`). A skill without `profiles` is visible to every profile. Callers that do not know a profile (the old method signatures, or a null profile) see only unrestricted skills. `nameReserved` and the sim shadowing check still consider every shipped skill, so a hidden skill's name cannot be taken by a proposed one.
 
 ## Files of a folder skill
 
@@ -39,4 +43,4 @@ Reading those files is done by services in the executor component (series C); th
 
 ## Tests
 
-`LlmSkillFolderTests` (offline): flat skill found, folder skill found, folded description and list parsed, nested mapping skipped, `profiles` visibility, file list exclusions, single-line compatibility, file list on select. Existing `LlmSkillTests`, `LlmSkillAgentTests`, `LlmClientTests` and `A2ACoreTests` pass.
+`LlmSkillFolderTests` (offline): flat skill found, folder skill found, folded description, license, compatibility, allowed-tools and metadata parsed, every specification rule rejected (name, folder match, description, compatibility, unknown top-level field), `profiles` visibility, file list exclusions, single-line compatibility, file list on select. Existing `LlmSkillTests`, `LlmSkillAgentTests`, `LlmClientTests` and `A2ACoreTests` pass.

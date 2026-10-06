@@ -75,12 +75,57 @@ public class SkillIndex {
         doc.title = nz(doc.frontMatter.get("title"));
         if (doc.title.isEmpty()) doc.title = doc.name;
         doc.description = nz(doc.frontMatter.get("description"));
-        doc.risk = nz(doc.frontMatter.get("risk"));
+        doc.risk = nz(extension(doc.frontMatter, "risk"));
         if (doc.risk.isEmpty()) doc.risk = "confirm";
-        doc.profiles = splitList(doc.frontMatter.get("profiles"));
+        doc.profiles = splitList(extension(doc.frontMatter, "profiles"));
         doc.statusId = "LsksActive";
         doc.provenanceId = "LskpHuman";
         return doc;
+    }
+
+    /**
+     * Moqui keys (risk, profiles, services, screens). Flat skills may use them as top level keys; folder skills follow
+     * the Agent Skills specification, which allows only name, description, license, compatibility, metadata and
+     * allowed-tools, so there they live under metadata as moqui-risk, moqui-profiles and so on.
+     */
+    static String extension(Map<String, String> frontMatter, String key) {
+        String v = frontMatter.get("metadata." + EXT_PREFIX + key);
+        return v != null ? v : frontMatter.get(key);
+    }
+    static final String EXT_PREFIX = "moqui-";
+    static final java.util.Set<String> STANDARD_KEYS = new java.util.HashSet<>(Arrays.asList(
+            "name", "description", "license", "compatibility", "metadata", "allowed-tools"));
+    private static final java.util.regex.Pattern STANDARD_NAME =
+            java.util.regex.Pattern.compile("^[\\p{Ll}\\p{Nd}]+(-[\\p{Ll}\\p{Nd}]+)*$");
+
+    /**
+     * Checks a folder skill against the Agent Skills specification (agentskills.io/specification): required name of at
+     * most 64 lowercase alphanumeric characters and single hyphens matching the folder name, required description of
+     * at most 1024 characters, compatibility of at most 500, and no field outside the six defined ones.
+     * Returns the problems; an empty list means the skill is valid.
+     */
+    public static List<String> validateAgentSkill(SkillDoc doc, String folderName) {
+        List<String> errors = new ArrayList<>();
+        String name = doc.frontMatter.get("name");
+        if (name == null || name.isEmpty()) errors.add("name is required");
+        else {
+            if (name.length() > 64) errors.add("name is longer than 64 characters");
+            if (!STANDARD_NAME.matcher(name).matches())
+                errors.add("name may only contain lowercase letters, digits and single hyphens, not starting or ending with one");
+            if (folderName != null && !name.equals(folderName)) errors.add("name must match the folder name " + folderName);
+        }
+        String description = doc.frontMatter.get("description");
+        if (description == null || description.isBlank()) errors.add("description is required");
+        else if (description.length() > 1024) errors.add("description is longer than 1024 characters");
+        String compatibility = doc.frontMatter.get("compatibility");
+        if (compatibility != null && (compatibility.isEmpty() || compatibility.length() > 500))
+            errors.add("compatibility must be 1-500 characters");
+        for (String key : doc.frontMatter.keySet()) {
+            String top = key.indexOf('.') > 0 && key.startsWith("metadata.") ? "metadata" : key;
+            if (!STANDARD_KEYS.contains(top)) errors.add("field " + top + " is not defined by the specification; use metadata."
+                    + EXT_PREFIX + top + " for Moqui extensions");
+        }
+        return errors;
     }
 
     /** foo.md gives foo; foo/SKILL.md gives foo. */
@@ -137,7 +182,13 @@ public class SkillIndex {
                     if (piece.startsWith("- ")) items.add(unquote(piece.substring(2).trim()));
                 }
                 if (!items.isEmpty()) out.put(k, String.join(", ", items));
-                // otherwise a nested mapping or an empty value: not used by the loader
+                // one level of nested mapping (metadata:) is kept as "key.sub" entries
+                for (String c : cont) {
+                    String piece = c.trim();
+                    int sub = piece.indexOf(':');
+                    if (piece.startsWith("- ") || sub <= 0) continue;
+                    out.put(k + "." + piece.substring(0, sub).trim(), unquote(piece.substring(sub + 1).trim()));
+                }
             } else {
                 if (v.startsWith("[") && v.endsWith("]")) v = v.substring(1, v.length() - 1);
                 else {
@@ -159,7 +210,7 @@ public class SkillIndex {
     private static List<String> splitList(String v) {
         if (v == null || v.isBlank()) return null;
         List<String> out = new ArrayList<>();
-        for (String part : v.split(",")) {
+        for (String part : v.split("[,\\s]+")) {
             String p = unquote(part.trim());
             if (!p.isEmpty()) out.add(p);
         }
@@ -209,6 +260,11 @@ public class SkillIndex {
                     ResourceReference skillFile = child.getChild("SKILL.md");
                     if (skillFile != null && skillFile.getExists() && skillFile.isFile()) {
                         doc = parseMarkdown(skillFile.getText(), skillFile.getLocation());
+                        List<String> problems = validateAgentSkill(doc, name);
+                        if (!problems.isEmpty()) {
+                            logger.warn("Skipping skill folder {}: {}", child.getLocation(), String.join("; ", problems));
+                            continue;
+                        }
                         doc.folderLocation = child.getLocation();
                         doc.files = listSkillFiles(child);
                     }

@@ -36,12 +36,13 @@ name: folder-skill
 description: >
   Builds Moqui data files.
   Use it for seed data.
-risk: confirm
-profiles:
-  - executor
-  - reviewer
+license: Apache-2.0
+compatibility: Moqui with the tools component
+allowed-tools: Read Grep
 metadata:
   owner: someone
+  moqui-risk: reversible
+  moqui-profiles: "executor reviewer"
 ---
 # Folder skill
 Read references/model.md first.
@@ -50,9 +51,16 @@ Read references/model.md first.
         new File(folder, 'references/huge.md').text = 'x' * 2048
         new File(folder, 'agents/openai.yaml').text = 'interface: {}'
         new File(folder, '.hidden').text = 'hidden'
-        File unnamed = new File(root, 'unnamed-folder')
-        unnamed.mkdirs()
-        new File(unnamed, 'SKILL.md').text = '---\ndescription: no name key\n---\nBody'
+        // invalid per the specification: each must be skipped
+        [['unnamed-folder', '---\ndescription: no name key\n---\nBody'],
+         ['mismatch-dir', '---\nname: other-name\ndescription: d\n---\nBody'],
+         ['Bad--Name', '---\nname: Bad--Name\ndescription: d\n---\nBody'],
+         ['no-description', '---\nname: no-description\n---\nBody'],
+         ['top-level-ext', '---\nname: top-level-ext\ndescription: d\nprofiles: [executor]\n---\nBody']].each { n, text ->
+            File d = new File(root, n)
+            d.mkdirs()
+            new File(d, 'SKILL.md').text = text
+        }
         new File(root, 'not-a-skill').mkdirs()
         System.setProperty('moqui.llm.skill.file.max.bytes', '1024')
     }
@@ -88,12 +96,41 @@ Read references/model.md first.
         doc != null
         doc.description == 'Builds Moqui data files. Use it for seed data.'
         doc.profiles == ['executor', 'reviewer']
+        doc.risk == 'reversible'
+        doc.frontMatter['license'] == 'Apache-2.0'
+        doc.frontMatter['allowed-tools'] == 'Read Grep'
+        doc.frontMatter['metadata.owner'] == 'someone'
         doc.body.startsWith('# Folder skill')
-        !doc.frontMatter.containsKey('owner')
         doc.folderLocation.contains('folder-skill')
-        and: 'a folder without a name key takes the folder name; a folder without SKILL.md is ignored'
-        docs['unnamed-folder'] != null
+        and: 'a folder without SKILL.md is ignored'
         !docs.containsKey('not-a-skill')
+    }
+
+    def "folder skills that break the Agent Skills specification are skipped"() {
+        when:
+        def docs = scan()
+        then:
+        !docs.containsKey('unnamed-folder')
+        !docs.containsKey('other-name')
+        !docs.containsKey('mismatch-dir')
+        !docs.containsKey('Bad--Name')
+        !docs.containsKey('no-description')
+        !docs.containsKey('top-level-ext')
+    }
+
+    def "validateAgentSkill reports every broken rule"() {
+        expect:
+        SkillIndex.validateAgentSkill(SkillIndex.parseMarkdown('---\nname: ok-name\ndescription: fine\n---\nb', null), 'ok-name').isEmpty()
+        SkillIndex.validateAgentSkill(SkillIndex.parseMarkdown('---\nname: -lead\ndescription: d\n---\nb', null), '-lead')
+                .any { it.contains('lowercase') }
+        SkillIndex.validateAgentSkill(SkillIndex.parseMarkdown('---\nname: ' + ('a' * 65) + '\ndescription: d\n---\nb', null), null)
+                .any { it.contains('64') }
+        SkillIndex.validateAgentSkill(SkillIndex.parseMarkdown('---\nname: n\ndescription: ' + ('d' * 1025) + '\n---\nb', null), 'n')
+                .any { it.contains('1024') }
+        SkillIndex.validateAgentSkill(SkillIndex.parseMarkdown('---\nname: n\ndescription: d\ncompatibility: ' + ('c' * 501) + '\n---\nb', null), 'n')
+                .any { it.contains('500') }
+        SkillIndex.validateAgentSkill(SkillIndex.parseMarkdown('---\nname: n\ndescription: d\nrisk: confirm\n---\nb', null), 'n')
+                .any { it.contains('metadata.moqui-risk') }
     }
 
     def "file list skips agents, dot files, oversized files and SKILL.md"() {
