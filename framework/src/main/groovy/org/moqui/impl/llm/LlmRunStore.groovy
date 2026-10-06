@@ -154,8 +154,9 @@ public final class LlmRunStore {
         result
     }
 
-    static Map<String, Object> getRun(ExecutionContext ec, String runId) {
-        EntityValue value = ownedRun(ec, runId, false)
+    /** anyOwner: for a calling service that has already checked who may see this run (see resumeWaiting). */
+    static Map<String, Object> getRun(ExecutionContext ec, String runId, boolean anyOwner = false) {
+        EntityValue value = ownedRun(ec, runId, false, anyOwner)
         Map<String, Object> result = runMap(value)
         result.statuses = disabled(ec) {
             ec.entity.find('moqui.llm.LlmRunStatus').condition('runId', runId)
@@ -286,9 +287,9 @@ public final class LlmRunStore {
         run?.statusId
     }
 
-    static void linkJobRun(ExecutionContext ec, String runId, String jobRunId) {
+    static void linkJobRun(ExecutionContext ec, String runId, String jobRunId, boolean anyOwner = false) {
         isolated(ec) {
-            EntityValue run = ownedRun(ec, runId, true)
+            EntityValue run = ownedRun(ec, runId, true, anyOwner)
             run.setAll([jobRunId: jobRunId, lastUpdatedDate: ec.user.nowTimestamp]).update()
         }
     }

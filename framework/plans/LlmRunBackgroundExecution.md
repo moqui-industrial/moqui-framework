@@ -80,3 +80,14 @@ How it behaves:
 `LlmRunExecutionTests` (fake provider, real ServiceJob): queued run executes as its owner and completes with a notification; run that asks for confirmation ends its job and `confirm#LlmRun` resumes it with the decision in its trajectory; an answer resumes a run waiting for the client; a rejection cancels and calls the provider no more; cancelling a running run stops it, a duplicate `execute` does nothing; an orphaned queued run is re-dispatched by recovery; the profile `pool-max` keeps a second run queued while the first runs.
 
 `LlmRunStoreTests` still covers the store; all `Llm*`, `A2A*` and `org.moqui.impl.llm.*` tests pass (338 run, 4 optional/live tests skipped).
+
+## 6. What the executor component needed besides this series
+
+Small additions on the same branch, used by `moqui-agent-executor` (see its `plans/AgentExecutor.md`):
+
+- `SimRunner.run(ec, closure)`: the held overlay of `enter_sim` as a reusable call. It returns the closure's result and every row it would have created, updated or deleted (`TransactionCacheDb.describeChanges`, with the values read back and encrypted fields masked), then discards everything. It refuses to start inside another simulation. Tested in `SimRunnerTests`.
+- `LlmRunExecutor.currentRun(ec)`: the durable run the calling tool service belongs to; it throws anywhere else. Services that a profile exposes as typed tools must be `allow-remote`, so each one starts with this call.
+- `LlmRunStore.getRun`, `linkJobRun` and `LlmRunExecutor.dispatch` take `anyOwner` for a calling service that has already decided who may act (a code publisher resuming someone else's run).
+- `ServiceCallTool` now returns the failure of a service (`ec.message` errors) to the model as `{error: ...}` and clears it. Before, a failed service gave an empty result and left the error on the context.
+- `service.location` is cleared per service name by the component's publish step. The cache also drops idle entries: `MoquiDevConf.xml` sets `expire-time-idle="10"` seconds, so a temporary staged definition must be put again right before every call; the component does that.
+- `UrlResourceReference.getExists()` remembers a positive answer. A published file that is later deleted from disk is still found until `resource.reference.location` is cleared or the server restarts. Publishing and replacing files is not affected.

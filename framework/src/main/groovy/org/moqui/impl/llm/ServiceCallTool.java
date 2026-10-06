@@ -154,7 +154,14 @@ public class ServiceCallTool implements LlmTool {
         String authError = RunServiceTool.requireAuthenticatedService(ec, serviceName);
         if (authError != null) return error(authError);
         Map<String, Object> in = sanitizeArguments(arguments);
-        return ec.getService().sync().name(serviceName).parameters(in).call();
+        Map<String, Object> result = ec.getService().sync().name(serviceName).parameters(in).call();
+        // a failed service reports through the message facade and returns nothing: give the model the reason
+        if (ec.getMessage().hasError()) {
+            String message = ec.getMessage().getErrorsString();
+            ec.getMessage().clearErrors();
+            return error(message);
+        }
+        return result;
     }
 
     /** Drop login-switch and other skip fields from tool args (do not trust the JSON Schema). */
