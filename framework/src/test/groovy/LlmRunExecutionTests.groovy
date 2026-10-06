@@ -116,7 +116,7 @@ class LlmRunExecutionTests extends Specification {
         if (confNode != null) state = new LlmFacadeImpl.ProfileState(name, confNode, state.url, state.path, state.endpointUrl,
                 state.apiKey, state.authHeaderName, state.authHeaderValue, state.model, state.maxTokensParameter,
                 false, 120, 0f, 0, true, 0, state.contextLimitPolicy, null, null, false, [:], [:], state.requestFactory,
-                protocol, [] as Set, [], false, 15, null, true, false, false, false, false, false, [])
+                protocol, [] as Set, [], false, 15, null, true, false, false, false, false, false, false, [])
         state.allowedServices = [
                 new LlmFacadeImpl.ServiceAllow('org.moqui.impl.LlmServices.suspend#CurrentLlmRun', 'ask', 'Stop and ask')]
         profiles().put(name, state)
