@@ -55,6 +55,6 @@ final class SkillUseGate {
         client.activeSkillName = skillName;
         if (client.conversation != null) client.conversation.setAttribute("activeSkillName", skillName);
         // The next model iteration reads this from the conversation window. Tool-result trim drops the widgets section.
-        LlmGateway.refreshContext(client, "skill-widgets", SkillIndex.activeWidgetText(client.ec, skillName));
+        LlmGateway.refreshContext(client, "skill-widgets", SkillIndex.activeWidgetText(client.ec, skillName, client.profile.name));
     }
 }

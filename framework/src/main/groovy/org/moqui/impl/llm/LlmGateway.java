@@ -321,7 +321,7 @@ public final class LlmGateway {
         refreshContext(impl, "session", session);
         if (assistContext) {
             refreshContext(impl, "pins", PinTool.text(impl));
-            refreshContext(impl, "skill-widgets", SkillIndex.activeWidgetText(impl.ec, impl.activeSkillName));
+            refreshContext(impl, "skill-widgets", SkillIndex.activeWidgetText(impl.ec, impl.activeSkillName, impl.profile.name));
         }
         String user = str(body.get("user"));
         java.util.List<org.moqui.llm.LlmContentPart> attachments = GatewayInput.attachments(body.get("attachments"));
@@ -388,7 +388,7 @@ public final class LlmGateway {
         }
         String bodySkill = body != null ? str(body.get("activeSkillName")) : null;
         if (bodySkill != null) {
-            SkillIndex.SkillDoc doc = SkillIndex.getByName(impl.ec, bodySkill);
+            SkillIndex.SkillDoc doc = SkillIndex.getByName(impl.ec, bodySkill, impl.profile.name);
             if (doc != null) SkillUseGate.activate(impl, doc.name);
         }
     }
@@ -471,7 +471,7 @@ public final class LlmGateway {
     static void injectSkills(LlmClientImpl impl, String userText) {
         if (impl == null || userText == null || userText.isBlank()) return;
         try {
-            impl.injectContext("skills", SkillIndex.formatInjectForQuery(impl.ec, userText));
+            impl.injectContext("skills", SkillIndex.formatInjectForQuery(impl.ec, userText, impl.profile.name));
         } catch (Throwable t) {
             logger.warn("Skill inject failed: {}", t.getMessage());
         }

@@ -69,14 +69,16 @@ public class FindSkillTool implements LlmTool {
         int limit = SkillIndex.DEFAULT_LIMIT;
         Object lim = args.get("limit");
         if (lim instanceof Number) limit = ((Number) lim).intValue();
+        LlmClientImpl current = LlmAgentLoop.currentClient();
+        String profileName = current != null ? current.profile.name : null;
         List<Map<String, Object>> out = new ArrayList<>();
         if (!query.isEmpty()) {
-            List<SkillIndex.SkillDoc> docs = SkillIndex.retrieve(ec, query, limit);
+            List<SkillIndex.SkillDoc> docs = SkillIndex.retrieve(ec, query, limit, profileName);
             for (SkillIndex.SkillDoc d : docs) out.add(toMap(ec, d, false));
         }
         result.put("skills", out);
         if (!select.isEmpty()) {
-            SkillIndex.SkillDoc chosen = SkillIndex.getByName(ec, select);
+            SkillIndex.SkillDoc chosen = SkillIndex.getByName(ec, select, profileName);
             if (chosen == null) {
                 result.put("error", "unknown_skill");
                 result.put("instruction", "No skill named \"" + select
@@ -96,6 +98,16 @@ public class FindSkillTool implements LlmTool {
         return result;
     }
 
+    /** Tells the agent which files ship with a folder skill. Paths are relative to the skill folder. */
+    static String filesSection(SkillIndex.SkillDoc d) {
+        StringBuilder sb = new StringBuilder("\n\n## Skill files\nFiles in the folder of skill `" + d.name + "` (paths relative to it):\n");
+        int shown = Math.min(d.files.size(), MAX_LISTED_FILES);
+        for (int i = 0; i < shown; i++) sb.append("- ").append(d.files.get(i)).append('\n');
+        if (d.files.size() > shown) sb.append("- ... ").append(d.files.size() - shown).append(" more\n");
+        return sb.toString();
+    }
+    static final int MAX_LISTED_FILES = 100;
+
     static Map<String, Object> toMap(ExecutionContext ec, SkillIndex.SkillDoc d) {
         return toMap(ec, d, true);
     }
@@ -106,7 +118,9 @@ public class FindSkillTool implements LlmTool {
         m.put("title", d.title);
         m.put("description", d.description);
         m.put("risk", d.risk);
-        m.put("body", includeWidgets ? d.body : SkillIndex.withoutWidgets(d.body));
+        String body = includeWidgets ? d.body : SkillIndex.withoutWidgets(d.body);
+        if (includeWidgets && d.files != null && !d.files.isEmpty()) body = body + filesSection(d);
+        m.put("body", body);
         if (d.skillId != null) m.put("skillId", d.skillId);
         if (d.statusId != null) m.put("status", d.statusId);
         if (d.sourceLocation != null) m.put("sourceLocation", d.sourceLocation);
