@@ -162,8 +162,14 @@ class LlmRunExecutionTests extends Specification {
         awaitJobEnd(finished.jobRunId as String)
         def jr = jobRun(finished.jobRunId as String)
         Map done = LlmRunStore.getRun(ec, run.runId as String)
-        def notes = ec.entity.find('moqui.security.user.NotificationMessage').condition('topic', 'LlmRunEvents')
-                .disableAuthz().useCache(false).list().findAll { it.messageJson?.contains(run.runId as String) }
+        // the job records its end first and sends the notification right after
+        def notes = []
+        long notesUntil = System.currentTimeMillis() + 15000L
+        while (notes.isEmpty() && System.currentTimeMillis() < notesUntil) {
+            notes = ec.entity.find('moqui.security.user.NotificationMessage').condition('topic', 'LlmRunEvents')
+                    .disableAuthz().useCache(false).list().findAll { it.messageJson?.contains(run.runId as String) }
+            if (notes.isEmpty()) Thread.sleep(200)
+        }
         def noted = notes ? ec.entity.find('moqui.security.user.NotificationMessageUser')
                 .condition('notificationMessageId', 'in', notes*.notificationMessageId).condition('userId', ownerUserId)
                 .disableAuthz().useCache(false).list() : []
