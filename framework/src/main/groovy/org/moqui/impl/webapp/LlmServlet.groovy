@@ -349,6 +349,9 @@ class ServletStreamListener implements LlmStreamListener {
     @Override void onDelta(String textDelta) {
         emit("delta", [content: textDelta] as Map<String, Object>)
     }
+    @Override void onRefusalDelta(String refusalDelta) {
+        emit("refusal_delta", [content: refusalDelta] as Map<String, Object>)
+    }
     @Override void onToolCallDelta(String name, String argumentsSoFar) {
         emit("write_ui_delta", [name: name, arguments: argumentsSoFar] as Map<String, Object>)
     }
