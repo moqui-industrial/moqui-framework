@@ -68,17 +68,19 @@ public class OpenAiCompatProtocol implements LlmProtocol {
         AtomicBoolean finished = new AtomicBoolean(false);
         restClient.streamSse(new RestClient.SseConsumer() {
             @Override public boolean onEvent(String event, String data, String id) {
+                if (finished.get()) return false;
                 assembler.accept(data, listener);
                 return true;
             }
-            @Override public void onComplete() {
+            /** The connection ended after its last event, without the [DONE] sentinel. */
+            @Override public void onComplete() { end(false); }
+            /** The [DONE] sentinel arrived. */
+            @Override public void onDone() { end(true); }
+            private void end(boolean sentinel) {
                 if (!finished.compareAndSet(false, true)) return;
-                // Clean EOF or [DONE] with tokens but no finish_reason is a truncated stream, not STOP.
-                if (assembler.hasUnfinishedOutput()) {
-                    listener.onFailure(new java.io.IOException("LLM stream ended without finish_reason"));
-                } else {
-                    listener.onComplete(assembler.toResult(200, null));
-                }
+                String problem = assembler.endProblem(sentinel, requireDoneSentinel());
+                if (problem != null) listener.onFailure(new java.io.IOException(problem));
+                else listener.onComplete(assembler.toResult(200, null));
             }
             @Override public void onFailure(Throwable t) {
                 if (!finished.compareAndSet(false, true)) return;
@@ -92,6 +94,13 @@ public class OpenAiCompatProtocol implements LlmProtocol {
             }
         }, request.onStreamOpen);
     }
+
+    /**
+     * The standard stream ends with the [DONE] sentinel after the last event; a connection that ends before it was cut
+     * short. A subclass for a provider that is known to end its stream without the sentinel turns this off, per profile
+     * and never by guessing from the host or model.
+     */
+    protected boolean requireDoneSentinel() { return true; }
 
     @Override
     public ProtocolResult chat(ProtocolRequest request) {
@@ -186,8 +195,14 @@ public class OpenAiCompatProtocol implements LlmProtocol {
         if (request.maxTokens != null) {
             String param = request.maxTokensParameter != null && !request.maxTokensParameter.isBlank()
                     ? request.maxTokensParameter : "max_tokens";
+            // the two spellings of the limit must not both be sent with different meanings
+            for (String other : new String[] {"max_tokens", "max_completion_tokens"})
+                if (!other.equals(param) && body.containsKey(other))
+                    throw new LlmException("extraBody sets " + other + " but this profile sends the token limit as " + param
+                            + "; set only one of them", LlmFinishReason.ERROR, 0, request.profileName);
             body.put(param, request.maxTokens);
         }
+        requireSingleChoice(body, request);
         boolean stream = request.stream;
         body.put("stream", stream);
         if (stream) {
@@ -217,6 +232,11 @@ public class OpenAiCompatProtocol implements LlmProtocol {
                     params.put("properties", new LinkedHashMap<>());
                 }
                 fn.put("parameters", params);
+                Boolean strict = tool.getStrict();
+                if (strict != null) {
+                    if (strict) requireStrictSchema(tool.getName(), params);
+                    fn.put("strict", strict);
+                }
                 Map<String, Object> tm = new LinkedHashMap<>();
                 tm.put("type", "function");
                 tm.put("function", fn);
@@ -224,7 +244,103 @@ public class OpenAiCompatProtocol implements LlmProtocol {
             }
             if (!toolList.isEmpty()) body.put("tools", toolList);
         }
+        requireToolChoiceSent(body, request);
         return body;
+    }
+
+    /**
+     * This client reads one alternative. An n other than the integer 1, a fractional or non-numeric n and an explicit
+     * null are refused before anything is sent, after extraBody has been merged; n is never corrected silently.
+     */
+    static void requireSingleChoice(Map<String, Object> body, ProtocolRequest request) {
+        if (!body.containsKey("n")) return;
+        Object n = body.get("n");
+        boolean one = (n instanceof Integer || n instanceof Long || n instanceof Short || n instanceof Byte
+                || n instanceof java.math.BigInteger) && ((Number) n).longValue() == 1L;
+        if (!one) throw new LlmException("Chat Completions n must be the integer 1 (this client reads a single choice), got "
+                + (n == null ? "null" : n.getClass().getSimpleName() + " " + n), LlmFinishReason.ERROR, 0,
+                request != null ? request.profileName : null);
+    }
+
+    /**
+     * The two rules of strict function schemas that are checked locally: every object lists all its properties as
+     * required and forbids additional properties. The schema is not changed to meet them, and nothing else of the
+     * provider's structured-output subset is validated here.
+     */
+    static void requireStrictSchema(String toolName, Map<String, Object> schema) {
+        checkStrictNode(toolName, "parameters", schema, true, schema, new java.util.HashSet<>());
+    }
+
+    private static void checkStrictNode(String tool, String path, Object node, boolean root, Map<String, Object> rootSchema,
+            Set<String> visitedRefs) {
+        if (!(node instanceof Map)) return;
+        Map<?, ?> map = (Map<?, ?>) node;
+        Object ref = map.get("$ref");
+        if (ref instanceof String) {
+            // a local reference is followed once; an unresolvable one cannot be shown to be strict
+            Object target = resolveLocalRef(rootSchema, (String) ref);
+            if (target == null) throw new LlmException("Strict tool " + tool + ": " + path + " has a $ref that cannot be resolved: " + ref);
+            if (visitedRefs.add((String) ref)) checkStrictNode(tool, path + "(" + ref + ")", target, false, rootSchema, visitedRefs);
+            return;
+        }
+        Object type = map.get("type");
+        boolean object = "object".equals(type) || map.get("properties") instanceof Map
+                || (type instanceof List && ((List<?>) type).contains("object"));
+        if (root && !"object".equals(type))
+            throw new LlmException("Strict tool " + tool + ": " + path + " must have type object");
+        if (object) {
+            if (!Boolean.FALSE.equals(map.get("additionalProperties")))
+                throw new LlmException("Strict tool " + tool + ": " + path + " must set additionalProperties to false");
+            Map<?, ?> props = map.get("properties") instanceof Map ? (Map<?, ?>) map.get("properties") : java.util.Collections.emptyMap();
+            Set<String> required = new LinkedHashSet<>();
+            if (map.get("required") instanceof List) for (Object r : (List<?>) map.get("required")) required.add(String.valueOf(r));
+            for (Object key : props.keySet())
+                if (!required.contains(String.valueOf(key)))
+                    throw new LlmException("Strict tool " + tool + ": " + path + " must list " + key + " as required");
+            for (Map.Entry<?, ?> e : props.entrySet())
+                checkStrictNode(tool, path + ".properties." + e.getKey(), e.getValue(), false, rootSchema, visitedRefs);
+        }
+        if (map.get("items") != null) checkStrictNode(tool, path + ".items", map.get("items"), false, rootSchema, visitedRefs);
+        for (String defs : new String[] {"$defs", "definitions"})
+            if (map.get(defs) instanceof Map && root)
+                for (Map.Entry<?, ?> e : ((Map<?, ?>) map.get(defs)).entrySet())
+                    checkStrictNode(tool, path + "." + defs + "." + e.getKey(), e.getValue(), false, rootSchema, visitedRefs);
+        for (String union : new String[] {"anyOf", "oneOf", "allOf"})
+            if (map.get(union) instanceof List) {
+                int i = 0;
+                for (Object branch : (List<?>) map.get(union))
+                    checkStrictNode(tool, path + "." + union + "[" + i++ + "]", branch, false, rootSchema, visitedRefs);
+            }
+    }
+
+    private static Object resolveLocalRef(Map<String, Object> root, String ref) {
+        if (ref == null || !ref.startsWith("#/")) return null;
+        Object cur = root;
+        for (String part : ref.substring(2).split("/")) {
+            if (!(cur instanceof Map)) return null;
+            cur = ((Map<?, ?>) cur).get(part.replace("~1", "/").replace("~0", "~"));
+        }
+        return cur;
+    }
+
+    /**
+     * A named tool_choice must name a tool that is really in the request: after extraBody is merged and the generated
+     * tools are in place, naming a tool that is not sent is refused before sending.
+     */
+    static void requireToolChoiceSent(Map<String, Object> body, ProtocolRequest request) {
+        Object choice = body.get("tool_choice");
+        if (!(choice instanceof Map)) return;
+        Object fn = ((Map<?, ?>) choice).get("function");
+        Object name = fn instanceof Map ? ((Map<?, ?>) fn).get("name") : null;
+        if (name == null) return;
+        boolean sent = false;
+        if (body.get("tools") instanceof List)
+            for (Object t : (List<?>) body.get("tools")) {
+                Object tf = t instanceof Map ? ((Map<?, ?>) t).get("function") : null;
+                if (tf instanceof Map && name.equals(((Map<?, ?>) tf).get("name"))) sent = true;
+            }
+        if (!sent) throw new LlmException("tool_choice names " + name + " but no tool with that name is sent",
+                LlmFinishReason.ERROR, 0, request != null ? request.profileName : null);
     }
 
     public static List<Map<String, Object>> convertMessages(List<LlmMessage> window) {
@@ -244,7 +360,10 @@ public class OpenAiCompatProtocol implements LlmProtocol {
                     break;
                 case ASSISTANT:
                     m.put("role", "assistant");
+                    Object refusal = msg.metadata != null ? msg.metadata.get("refusal") : null;
                     m.put("content", msg.content);
+                    // a refused turn goes back as a refusal, not as text the assistant said
+                    if (refusal != null && !refusal.toString().isBlank()) m.put("refusal", refusal.toString());
                     if (msg.toolCalls != null && !msg.toolCalls.isEmpty()) {
                         List<Map<String, Object>> tcs = new ArrayList<>(msg.toolCalls.size());
                         for (LlmToolCall tc : msg.toolCalls) {
@@ -399,14 +518,24 @@ public class OpenAiCompatProtocol implements LlmProtocol {
         return null;
     }
 
-    /** Concatenate content and tool_call arguments by index; usage may arrive after finish_reason. */
+    /**
+     * Concatenate content, refusal and tool_call arguments by index. The stream is only a result when it is complete:
+     * a finished choice and, by default, the closing sentinel. Usage may arrive after finish_reason in a chunk without
+     * choices, and is kept. Anything that cannot be a valid stream is an error, never a guessed success.
+     */
     static final class StreamAssembler {
         private final String requestModel;
+        private final String profileName;
         private final boolean logContent;
         private final StringBuilder content = new StringBuilder();
+        private final StringBuilder refusal = new StringBuilder();
         private final StringBuilder reasoning = new StringBuilder();
         private final TreeMap<Integer, ToolCallAcc> toolCalls = new TreeMap<>();
         private final Map<String, Integer> toolCallIdToIndex = new LinkedHashMap<>();
+        private final Map<String, Object> responseMeta = new LinkedHashMap<>();
+        private final List<Object> annotations = new ArrayList<>();
+        private final List<Object> logprobContent = new ArrayList<>();
+        private final List<Object> logprobRefusal = new ArrayList<>();
         private String finishReason;
         private String model;
         private Map<String, Object> usageMap;
@@ -415,6 +544,7 @@ public class OpenAiCompatProtocol implements LlmProtocol {
 
         StreamAssembler(ProtocolRequest request) {
             this.requestModel = request != null ? request.model : null;
+            this.profileName = request != null ? request.profileName : null;
             this.logContent = request != null && request.logContent;
         }
 
@@ -428,13 +558,18 @@ public class OpenAiCompatProtocol implements LlmProtocol {
             try {
                 chunk = LlmJson.toMap(data);
             } catch (Throwable t) {
-                if (logger.isDebugEnabled()) logger.debug("Skipping non-JSON SSE chunk: " + t.getMessage());
-                return;
+                // a frame that is not JSON is not skipped: the stream can no longer be trusted
+                throw new LlmException("LLM stream event is not valid JSON: " + t.getMessage(), t,
+                        LlmFinishReason.ERROR, 0, profileName, null);
             }
-            if (chunk == null) return;
+            if (chunk == null) throw new LlmException("LLM stream event is not a JSON object",
+                    null, LlmFinishReason.ERROR, 0, profileName, null);
 
             String chunkModel = LlmRetryClassifier.str(chunk.get("model"));
             if (chunkModel != null && !chunkModel.isBlank()) model = chunkModel;
+            // chunks may be skeletons that complete each other: a later null never erases what is known
+            for (String key : new String[] {"id", "object", "created", "service_tier", "system_fingerprint"})
+                if (chunk.get(key) != null) responseMeta.put(key, chunk.get(key));
 
             Map<?, ?> err = LlmRetryClassifier.asMap(chunk.get("error"));
             if (err != null) {
@@ -445,6 +580,7 @@ public class OpenAiCompatProtocol implements LlmProtocol {
 
             Map<?, ?> usage = LlmRetryClassifier.asMap(chunk.get("usage"));
             if (usage != null) {
+                // the chunk carries the total so far, not an increment: the last one replaces the earlier ones
                 @SuppressWarnings("unchecked")
                 Map<String, Object> um = (Map<String, Object>) usage;
                 usageMap = um;
@@ -452,12 +588,27 @@ public class OpenAiCompatProtocol implements LlmProtocol {
 
             List<?> choices = chunk.get("choices") instanceof List ? (List<?>) chunk.get("choices") : null;
             if (choices == null || choices.isEmpty()) return;
-            Map<?, ?> choice = LlmRetryClassifier.asMap(choices.get(0));
-            if (choice == null) return;
+            for (Object o : choices) {
+                Map<?, ?> choice = LlmRetryClassifier.asMap(o);
+                if (choice == null) continue;
+                Integer index = choice.get("index") != null ? LlmRetryClassifier.toInt(choice.get("index")) : Integer.valueOf(0);
+                if (index == null || index != 0)
+                    throw new LlmException("LLM stream contains choice index " + choice.get("index")
+                            + " but this client supports exactly one alternative (n=1)",
+                            null, LlmFinishReason.ERROR, 0, profileName, null);
+                acceptChoice(choice, listener);
+            }
+        }
 
+        private void acceptChoice(Map<?, ?> choice, ProtocolStreamListener listener) {
             String fr = LlmRetryClassifier.str(choice.get("finish_reason"));
             if (fr == null) fr = LlmRetryClassifier.str(choice.get("finishReason"));
             if (fr != null && !fr.isBlank()) finishReason = fr;
+            Map<?, ?> logprobs = LlmRetryClassifier.asMap(choice.get("logprobs"));
+            if (logprobs != null) {
+                if (logprobs.get("content") instanceof List) logprobContent.addAll((List<?>) logprobs.get("content"));
+                if (logprobs.get("refusal") instanceof List) logprobRefusal.addAll((List<?>) logprobs.get("refusal"));
+            }
 
             Map<?, ?> delta = LlmRetryClassifier.asMap(choice.get("delta"));
             if (delta == null) return;
@@ -470,6 +621,15 @@ public class OpenAiCompatProtocol implements LlmProtocol {
                     if (listener != null) listener.onDelta(s);
                 }
             }
+            Object refusalDelta = delta.get("refusal");
+            if (refusalDelta instanceof CharSequence) {
+                String s = refusalDelta.toString();
+                if (!s.isEmpty()) {
+                    refusal.append(s);
+                    if (listener != null) listener.onRefusalDelta(s);
+                }
+            }
+            if (delta.get("annotations") instanceof List) annotations.addAll((List<?>) delta.get("annotations"));
             String think = LlmRetryClassifier.reasoningOf(delta);
             if (think != null && !think.isEmpty()) reasoning.append(think);
 
@@ -481,8 +641,18 @@ public class OpenAiCompatProtocol implements LlmProtocol {
             }
         }
 
-        boolean hasUnfinishedOutput() {
-            return finishReason == null && error == null && (content.length() > 0 || !toolCalls.isEmpty());
+        /**
+         * Why the stream that has just ended is not a result, or null when it is: a provider error is a result however
+         * the stream ended; otherwise a finished choice is needed and, unless the profile accepts its absence, the
+         * [DONE] sentinel. The reason is specific so a cut stream is told apart from a refused one.
+         */
+        String endProblem(boolean sentinel, boolean requireSentinel) {
+            if (error != null) return null;
+            if (finishReason == null)
+                return sentinel ? "LLM stream sent [DONE] without a finished choice" : "LLM stream ended without finish_reason";
+            if (!sentinel && requireSentinel)
+                return "LLM stream ended after finish_reason without the [DONE] sentinel";
+            return null;
         }
 
         private void accumulateToolCall(Map<?, ?> tc, ProtocolStreamListener listener) {
@@ -528,7 +698,7 @@ public class OpenAiCompatProtocol implements LlmProtocol {
 
         ProtocolResult toResult(int httpStatus, Throwable t) {
             String errorBody = errorBodyOf(t);
-            if (error == null && content.length() == 0 && toolCalls.isEmpty() && t != null) {
+            if (error == null && content.length() == 0 && refusal.length() == 0 && toolCalls.isEmpty() && t != null) {
                 String raw = (errorBody != null && !errorBody.isBlank()) ? errorBody : t.getMessage();
                 ProtocolResult r = LlmRetryClassifier.classify(httpStatus, raw);
                 if (r.model == null) r.model = model != null ? model : requestModel;
@@ -537,7 +707,7 @@ public class OpenAiCompatProtocol implements LlmProtocol {
                 return r;
             }
 
-            Map<String, Object> body = new LinkedHashMap<>();
+            Map<String, Object> body = new LinkedHashMap<>(responseMeta);
             if (model != null) body.put("model", model);
             else if (requestModel != null) body.put("model", requestModel);
             if (error != null) body.put("error", error);
@@ -545,9 +715,21 @@ public class OpenAiCompatProtocol implements LlmProtocol {
 
             List<Map<String, Object>> choices = new ArrayList<>();
             Map<String, Object> choice = new LinkedHashMap<>();
+            choice.put("index", 0);
             if (finishReason != null) choice.put("finish_reason", finishReason);
+            if (!logprobContent.isEmpty() || !logprobRefusal.isEmpty()) {
+                Map<String, Object> lp = new LinkedHashMap<>();
+                if (!logprobContent.isEmpty()) lp.put("content", logprobContent);
+                if (!logprobRefusal.isEmpty()) lp.put("refusal", logprobRefusal);
+                choice.put("logprobs", lp);
+            }
             Map<String, Object> message = new LinkedHashMap<>();
-            message.put("content", content.length() == 0 ? null : content.toString());
+            // a finished completion with no text is an empty string, not a missing one
+            boolean emptyButFinished = content.length() == 0 && "stop".equalsIgnoreCase(finishReason)
+                    && toolCalls.isEmpty() && refusal.length() == 0 && error == null;
+            message.put("content", content.length() > 0 || emptyButFinished ? content.toString() : null);
+            if (refusal.length() > 0) message.put("refusal", refusal.toString());
+            if (!annotations.isEmpty()) message.put("annotations", annotations);
             if (reasoning.length() > 0) message.put("reasoning_content", reasoning.toString());
             if (!toolCalls.isEmpty()) message.put("tool_calls", toolCallsAsOpenAi());
             choice.put("message", message);

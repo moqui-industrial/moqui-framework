@@ -17,6 +17,8 @@ public final class LlmUsage {
     public Integer promptTokens;
     public Integer completionTokens;
     public Integer totalTokens;
+    public Integer cachedInputTokens;
+    public Integer reasoningOutputTokens;
 
     public LlmUsage() { }
     public LlmUsage(Integer promptTokens, Integer completionTokens, Integer totalTokens) {
@@ -28,4 +30,6 @@ public final class LlmUsage {
     public Integer getPromptTokens() { return promptTokens; }
     public Integer getCompletionTokens() { return completionTokens; }
     public Integer getTotalTokens() { return totalTokens; }
+    public Integer getCachedInputTokens() { return cachedInputTokens; }
+    public Integer getReasoningOutputTokens() { return reasoningOutputTokens; }
 }

@@ -23,6 +23,13 @@ public interface LlmTool {
     String getDescription();
     Map<String, Object> getParametersSchema();
     Execution getExecution();
+
+    /**
+     * Chat Completions function tools: when non-null, {@code function.strict} is sent with exactly this value; null
+     * (the default) omits it. A strict tool must have a schema that meets the structured-output rules; see the
+     * Chat Completions notes.
+     */
+    default Boolean getStrict() { return null; }
     enum Execution { SERVER, CLIENT }
 
     Object execute(Map<String, Object> arguments, ExecutionContext ec);

@@ -294,6 +294,9 @@ public class LlmClientImpl implements LlmClient {
                     @Override public void onDelta(String textDelta) {
                         if (textDelta != null && !textDelta.isEmpty()) listener.onDelta(textDelta);
                     }
+                    @Override public void onRefusalDelta(String refusalDelta) {
+                        if (refusalDelta != null && !refusalDelta.isEmpty()) listener.onRefusalDelta(refusalDelta);
+                    }
                     @Override public void onToolCallDelta(String name, String argumentsSoFar) {
                         listener.onToolCallDelta(name, argumentsSoFar);
                     }
@@ -328,7 +331,7 @@ public class LlmClientImpl implements LlmClient {
             }
             lastResult = result;
             LlmFinishReason fr = result.finishReason != null ? result.finishReason : LlmFinishReason.ERROR;
-            if (fr == LlmFinishReason.STOP || fr == LlmFinishReason.LENGTH || fr == LlmFinishReason.TOOL_CALLS) {
+            if (isDefinitive(fr)) {
                 persistSuccess(window, result, fr, start);
                 LlmResponse streamed = finishStreamResult(listener, result, start);
                 try { ConversationSummary.maybe(this); }
@@ -443,7 +446,7 @@ public class LlmClientImpl implements LlmClient {
                 lastResult = result;
                 LlmFinishReason fr = result.finishReason != null ? result.finishReason : LlmFinishReason.ERROR;
 
-                if (fr == LlmFinishReason.STOP || fr == LlmFinishReason.LENGTH || fr == LlmFinishReason.TOOL_CALLS) {
+                if (isDefinitive(fr)) {
                     persistSuccess(window, result, fr, start);
                     LlmResponse done = toResponse(result, fr, start);
                     try { ConversationSummary.maybe(this); }
@@ -514,11 +517,39 @@ public class LlmClientImpl implements LlmClient {
         }
     }
 
+    /** A result that ends the turn: an answer, a limit that was reached, tool calls to run, or a refusal. */
+    static boolean isDefinitive(LlmFinishReason fr) {
+        return fr == LlmFinishReason.STOP || fr == LlmFinishReason.LENGTH || fr == LlmFinishReason.TOOL_CALLS
+                || fr == LlmFinishReason.REFUSAL;
+    }
+
+    /**
+     * What the history keeps about the assistant message besides its text: the refusal, so a replayed refusal goes back as
+     * one, and the provider's identifiers and finish reason. Null when there is nothing to keep.
+     */
+    static Map<String, Object> messageMetadata(ProtocolResult result) {
+        Map<String, Object> md = new LinkedHashMap<>();
+        if (result.refusal != null) md.put("refusal", result.refusal);
+        if (result.metadata != null) {
+            Object response = result.metadata.get("response");
+            if (response instanceof Map && ((Map<?, ?>) response).get("id") != null)
+                md.put("providerResponseId", ((Map<?, ?>) response).get("id"));
+            Object choice = result.metadata.get("choice");
+            if (choice instanceof Map && ((Map<?, ?>) choice).get("finish_reason") != null)
+                md.put("providerFinishReason", ((Map<?, ?>) choice).get("finish_reason"));
+            Object message = result.metadata.get("message");
+            if (message instanceof Map && ((Map<?, ?>) message).get("annotations") != null)
+                md.put("annotations", ((Map<?, ?>) message).get("annotations"));
+        }
+        return md.isEmpty() ? null : md;
+    }
+
     private void persistSuccess(List<LlmMessage> window, ProtocolResult result, LlmFinishReason fr, long start) {
         if (conversation == null) return;
         conversation.persistIsolated(() -> {
             LlmMessage asst = LlmMessage.assistant(result.content);
             asst.toolCalls = result.toolCalls;
+            asst.metadata = messageMetadata(result);
             conversation.appendInternal(asst);
             conversation.writeCallLog(profile.name, profile.protocol != null ? profile.protocol.getName() : null,
                     result.model != null ? result.model : resolveModel(), profile.logContent,
@@ -545,7 +576,7 @@ public class LlmClientImpl implements LlmClient {
 
     private LlmResponse finishStreamResult(LlmStreamListener listener, ProtocolResult result, long start) {
         LlmFinishReason fr = result.finishReason != null ? result.finishReason : LlmFinishReason.ERROR;
-        if (fr == LlmFinishReason.STOP || fr == LlmFinishReason.LENGTH || fr == LlmFinishReason.TOOL_CALLS) {
+        if (isDefinitive(fr)) {
             LlmResponse r = toResponse(result, fr, start);
             if (r.toolCalls != null) {
                 for (LlmToolCall tc : r.toolCalls) {
@@ -653,6 +684,8 @@ public class LlmClientImpl implements LlmClient {
     LlmResponse toResponse(ProtocolResult result, LlmFinishReason fr, long start) {
         LlmResponse r = new LlmResponse();
         r.content = result.content;
+        r.refusal = result.refusal;
+        r.metadata = result.metadata;
         r.finishReason = fr;
         r.toolCalls = result.toolCalls;
         r.usage = result.usage;

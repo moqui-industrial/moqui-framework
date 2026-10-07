@@ -59,6 +59,10 @@ public interface LlmProtocol {
 
     final class ProtocolResult {
         public String content;
+        /** message.refusal / delta.refusal when the model declined to answer. */
+        public String refusal;
+        /** See {@link LlmResponse#metadata}. */
+        public Map<String, Object> metadata;
         /** Provider thinking / reasoning_content when present (logged, not persisted). */
         public String reasoning;
         public LlmFinishReason finishReason;
@@ -86,5 +90,7 @@ public interface LlmProtocol {
         void onFailure(Throwable t);
         /** Partial tool-call arguments while streaming (write_ui lang onto the canvas). */
         default void onToolCallDelta(String name, String argumentsSoFar) { }
+        /** A fragment of a refusal; refusal text is not content and is reported apart from it. */
+        default void onRefusalDelta(String refusalDelta) { }
     }
 }

@@ -14,5 +14,7 @@
 package org.moqui.llm;
 
 public enum LlmFinishReason {
-    STOP, LENGTH, CONTEXT_OVERFLOW, TOOL_CALLS, CONTENT_FILTER, EMPTY, ERROR, MAX_ITERATIONS
+    STOP, LENGTH, CONTEXT_OVERFLOW, TOOL_CALLS, CONTENT_FILTER, EMPTY, ERROR, MAX_ITERATIONS,
+    /** The model declined to answer (message.refusal). A definitive result, not an empty or failed one. */
+    REFUSAL
 }

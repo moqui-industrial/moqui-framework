@@ -18,6 +18,14 @@ import java.util.List;
 
 public final class LlmResponse {
     public String content;
+    /** The model's refusal text when it declined to answer; content is not replaced by it. */
+    public String refusal;
+    /**
+     * What the provider reported besides the text, structured: response (id, object, created, model, service_tier,
+     * system_fingerprint), choice (index, finish_reason, logprobs), message (annotations) and usage (the complete
+     * usage object with its details). Present also when raw logging is off. Null when nothing was reported.
+     */
+    public java.util.Map<String, Object> metadata;
     public LlmFinishReason finishReason;
     public List<LlmToolCall> toolCalls;
     public LlmUsage usage;
@@ -36,6 +44,8 @@ public final class LlmResponse {
     public LlmResponse() { }
 
     public String getContent() { return content; }
+    public String getRefusal() { return refusal; }
+    public java.util.Map<String, Object> getMetadata() { return metadata; }
     public LlmFinishReason getFinishReason() { return finishReason; }
     public List<LlmToolCall> getToolCalls() { return toolCalls != null ? toolCalls : new ArrayList<>(); }
     public LlmUsage getUsage() { return usage; }

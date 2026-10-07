@@ -465,7 +465,7 @@ public class RestClient {
         String dataStr = data.toString();
         if (dataStr.endsWith("\n")) dataStr = dataStr.substring(0, dataStr.length() - 1);
         if ("[DONE]".equals(dataStr)) {
-            consumer.onComplete();
+            consumer.onDone();
             return false;
         }
         return consumer.onEvent(event, dataStr, id);
@@ -737,7 +737,10 @@ public class RestClient {
         /** Return false to stop reading.
          *  event may be null (SSE spec default). data is concatenated multi-line data. */
         boolean onEvent(String event, String data, String id);
+        /** End of the stream: the connection closed after the last event. */
         default void onComplete() {}
+        /** The literal [DONE] sentinel arrived. Chat Completions style consumers treat it like the end of the stream. */
+        default void onDone() { onComplete(); }
         default void onFailure(Throwable t) { throw new BaseException("SSE stream failed", t); }
     }
 

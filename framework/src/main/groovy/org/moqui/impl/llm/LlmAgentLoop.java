@@ -131,7 +131,7 @@ final class LlmAgentLoop {
                 throw new LlmException("LLM returned empty content after " + client.profile.emptyRetries + " retries",
                         null, LlmFinishReason.EMPTY, result.httpStatus, client.profile.name, client.convId());
             }
-            if (fr != LlmFinishReason.STOP && fr != LlmFinishReason.LENGTH && fr != LlmFinishReason.TOOL_CALLS) {
+            if (!LlmClientImpl.isDefinitive(fr)) {
                 boolean retryable = result.retryable;
                 if (retryable && errorAttempts < client.profile.retryMax) {
                     errorAttempts++;
@@ -150,6 +150,7 @@ final class LlmAgentLoop {
 
             LlmMessage asst = LlmMessage.assistant(result.content);
             asst.toolCalls = hasCalls ? new ArrayList<>(calls) : null;
+            asst.metadata = LlmClientImpl.messageMetadata(result);
             if (client.conversation != null) {
                 final ProtocolResult logResult = result;
                 final int logIter = iteration;
@@ -164,7 +165,7 @@ final class LlmAgentLoop {
                 working.add(asst);
             }
 
-            if (!hasCalls || fr == LlmFinishReason.STOP || fr == LlmFinishReason.LENGTH) {
+            if (!hasCalls || fr == LlmFinishReason.STOP || fr == LlmFinishReason.LENGTH || fr == LlmFinishReason.REFUSAL) {
                 completeConversation();
                 client.throwIfCancelled();
                 LlmResponse r = client.toResponse(result, fr, start);
@@ -315,6 +316,9 @@ final class LlmAgentLoop {
                 client.profile.protocol.chatStream(req, new ProtocolStreamListener() {
                     @Override public void onDelta(String textDelta) {
                         if (textDelta != null && !textDelta.isEmpty()) listener.onDelta(textDelta);
+                    }
+                    @Override public void onRefusalDelta(String refusalDelta) {
+                        if (refusalDelta != null && !refusalDelta.isEmpty()) listener.onRefusalDelta(refusalDelta);
                     }
                     @Override public void onToolCallDelta(String name, String argumentsSoFar) {
                         listener.onToolCallDelta(name, argumentsSoFar);
