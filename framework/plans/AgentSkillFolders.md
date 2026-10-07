@@ -25,17 +25,30 @@ The parser reads folded and literal block scalars, plain values continued on ind
 
 A skill with `moqui-profiles` (or top-level `profiles` in a flat file) is visible only to those profiles, in `retrieve`, `getByName`, the injected catalog (`formatInjectForQuery`), `activeWidgetText`, the risk gate and the A2A extended card (`options.profile`). A skill without `profiles` is visible to every profile. Callers that do not know a profile (the old method signatures, or a null profile) see only unrestricted skills. `nameReserved` and the sim shadowing check still consider every shipped skill, so a hidden skill's name cannot be taken by a proposed one.
 
+## Front matter
+
+The front matter is read as YAML with SnakeYAML's safe constructor (no custom types, no duplicate keys, no collection aliases, nesting and size bounded). A scalar is its string, a list is comma separated, a mapping gives `key.sub` entries. What the specification requires to be a string and is not (a numeric `name`, a `description` that is a list, a `metadata` value that is a number or a list) is a problem of the skill, not text: a folder skill with a problem is skipped and the reason is in `SkillIndex.shippedDiagnostics`. A flat `skill/*.md` file whose front matter is not YAML still loads through the old line parser. The front matter ends at the first line that is only `---`, so a line of dashes in the text does not end it; a byte order mark and CRLF are accepted.
+
+## Order and names
+
+Components are scanned in load order and the entries of a skill directory by file name, so nothing depends on the order a file system lists directories in. When two skills have the same name, a folder skill wins over a flat file in the same directory, otherwise the first one stays; the others are left out and named in `shippedDiagnostics`. The reserved-name rule still covers every shipped skill.
+
 ## Files of a folder skill
 
-`SkillDoc.files` lists files relative to the folder, sorted, excluding:
+`SkillDoc.files` lists files relative to the folder in path order (each directory walked by name), excluding:
 
 - `SKILL.md`;
 - the top-level `agents/` folder (Codex metadata);
 - dot files and folders;
+- links and anything that is not a regular file;
 - files larger than `moqui.llm.skill.file.max.bytes` (default 262144);
-- anything beyond 500 files.
+- anything beyond 500 files: the list stops there, `SkillDoc.filesTruncated` is true and the files after the cut are not available.
 
-When `find_skill` selects a folder skill the body gets a `## Skill files` section listing up to 100 of them. Catalog entries (query results and injection) do not.
+`SkillDoc.filesSkipped` counts what was left out and why. When `find_skill` selects a folder skill the body gets a `## Skill files` section listing up to 100 of them; the result also carries `digest` and `filesTruncated`. Catalog entries (query results and injection) do not.
+
+`SkillFileAccess` is the only way the files are read: the file must be a listed one, it is opened without following a link, must be a regular file, its real path must stay inside the real path of the skill folder before opening and after reading, and the size is bounded while reading. A location that is not on a file system has no links; the same bounds and the listed-file rule apply. `SkillFileAccess.Content` says whether the bytes are text (valid UTF-8 without NUL) and carries their SHA-256.
+
+`SkillIndex.digest` is the SHA-256 over SKILL.md and every listed file (path, size, hash). `find_skill select` records it on the client (`getSelectedSkillDigest`) so a run can notice that a skill changed after it was selected.
 
 ## Not in this series
 
@@ -43,4 +56,4 @@ Reading those files is done by services in the executor component (series C); th
 
 ## Tests
 
-`LlmSkillFolderTests` (offline): flat skill found, folder skill found, folded description, license, compatibility, allowed-tools and metadata parsed, every specification rule rejected (name, folder match, description, compatibility, unknown top-level field), `profiles` visibility, file list exclusions, single-line compatibility, file list on select. Existing `LlmSkillTests`, `LlmSkillAgentTests`, `LlmClientTests` and `A2ACoreTests` pass.
+`LlmSkillAuditTests` (offline): YAML types and refusals, dashes, BOM and CRLF, legacy flat skills, duplicate names and order, deterministic truncation, links and swapped files, growth during read, binary detection, digests. `LlmSkillFolderTests` (offline): flat skill found, folder skill found, folded description, license, compatibility, allowed-tools and metadata parsed, every specification rule rejected (name, folder match, description, compatibility, unknown top-level field), `profiles` visibility, file list exclusions, single-line compatibility, file list on select. Existing `LlmSkillTests`, `LlmSkillAgentTests`, `LlmClientTests` and `A2ACoreTests` pass.
