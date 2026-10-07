@@ -21,6 +21,8 @@ public interface LlmStreamListener {
     default void onUpstreamOpen() { }
     default void onEvent(LlmResponseEvent event) { }
     default void onDelta(String textDelta) { }
+    /** A fragment of a refusal; refusal text is not content and is reported apart from it. */
+    default void onRefusalDelta(String refusalDelta) { }
     /** Partial write_ui (or other client tool) arguments while the model is still streaming. */
     default void onToolCallDelta(String name, String argumentsSoFar) { }
     default void onToolCall(LlmToolCall call, LlmTool.Execution execution) { }

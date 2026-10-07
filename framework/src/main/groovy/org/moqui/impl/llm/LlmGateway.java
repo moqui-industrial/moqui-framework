@@ -850,6 +850,7 @@ public final class LlmGateway {
         out.put("requestId", r.requestId);
         out.put("responseId", r.responseId);
         out.put("content", r.content);
+        if (r.refusal != null) out.put("refusal", r.refusal);
         out.put("finishReason", r.finishReason != null ? r.finishReason.name().toLowerCase() : null);
         out.put("yielded", r.yielded);
         out.put("pending", r.pending);
@@ -868,6 +869,7 @@ public final class LlmGateway {
         }
         out.put("toolResults", tr);
         out.put("usage", usageToMap(r.usage));
+        if (r.metadata != null) out.put("metadata", r.metadata);
         out.put("model", r.model);
         out.put("profile", r.profileName);
         out.put("durationMs", r.durationMs);
@@ -940,6 +942,8 @@ public final class LlmGateway {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("finishReason", r != null && r.finishReason != null ? r.finishReason.name().toLowerCase() : "stop");
         m.put("usage", r != null ? usageToMap(r.usage) : null);
+        if (r != null && r.refusal != null) m.put("refusal", r.refusal);
+        if (r != null && r.metadata != null) m.put("metadata", r.metadata);
         m.put("yielded", r != null && r.yielded);
         m.put("durationMs", r != null ? r.durationMs : 0L);
         m.put("model", r != null ? r.model : null);
@@ -1013,6 +1017,8 @@ public final class LlmGateway {
         m.put("promptTokens", u.promptTokens);
         m.put("completionTokens", u.completionTokens);
         m.put("totalTokens", u.totalTokens);
+        if (u.cachedInputTokens != null) m.put("cachedInputTokens", u.cachedInputTokens);
+        if (u.reasoningOutputTokens != null) m.put("reasoningOutputTokens", u.reasoningOutputTokens);
         return m;
     }
 

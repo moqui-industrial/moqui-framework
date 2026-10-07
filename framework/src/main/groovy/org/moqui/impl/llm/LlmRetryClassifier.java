@@ -19,6 +19,7 @@ import org.moqui.llm.LlmToolCall;
 import org.moqui.llm.LlmUsage;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
@@ -76,11 +77,26 @@ public final class LlmRetryClassifier {
         String finishReasonStr = str(firstChoice != null ? firstChoice.get("finish_reason") : null);
         if (finishReasonStr == null) finishReasonStr = str(firstChoice != null ? firstChoice.get("finishReason") : null);
         String content = message != null ? str(message.get("content")) : null;
+        String refusal = message != null ? str(message.get("refusal")) : null;
+        if (refusal != null && refusal.isBlank()) refusal = null;
         List<LlmToolCall> toolCalls = parseToolCalls(message != null ? message.get("tool_calls") : null);
         boolean hasToolCalls = toolCalls != null && !toolCalls.isEmpty();
         result.content = content;
         result.toolCalls = toolCalls;
         result.reasoning = reasoningOf(message);
+        result.metadata = metadataOf(body, firstChoice, message, asMap(body != null ? body.get("usage") : null));
+
+        // Exactly one alternative is supported (n=1): more than one choice would silently lose the others.
+        if (httpStatus >= 200 && httpStatus < 300 && error == null && choices != null
+                && (choices.size() > 1 || (firstChoice != null && firstChoice.get("index") != null
+                && !Integer.valueOf(0).equals(toInt(firstChoice.get("index")))))) {
+            result.finishReason = LlmFinishReason.ERROR;
+            result.errorMessage = "The provider returned " + choices.size() + " choices"
+                    + (choices.size() == 1 ? " (index " + firstChoice.get("index") + ")" : "")
+                    + "; this client supports exactly one (n=1)";
+            result.toolCalls = null;
+            return result;
+        }
 
         String overflowHaystack = joinNonNull(errorCode, errorType, errorMessage, rawJson);
 
@@ -100,6 +116,25 @@ public final class LlmRetryClassifier {
             return result;
         }
 
+        // 2b. refusal: the model declined; a definitive result, never empty, never retried, and no tool runs
+        if (refusal != null && httpStatus >= 200 && httpStatus < 300) {
+            result.finishReason = LlmFinishReason.REFUSAL;
+            result.refusal = refusal;
+            if (hasToolCalls) {
+                List<String> ignored = new ArrayList<>();
+                for (LlmToolCall tc : toolCalls) ignored.add(tc.name);
+                Map<String, Object> md = result.metadata != null ? result.metadata : new LinkedHashMap<>();
+                @SuppressWarnings("unchecked")
+                Map<String, Object> messageMd = md.get("message") instanceof Map
+                        ? (Map<String, Object>) md.get("message") : new LinkedHashMap<>();
+                messageMd.put("ignoredToolCalls", ignored);
+                md.put("message", messageMd);
+                result.metadata = md;
+                result.toolCalls = null;
+            }
+            return result;
+        }
+
         // 3. finish_reason=length (keep partial content; never empty-retry)
         if ("length".equalsIgnoreCase(finishReasonStr)) {
             result.finishReason = LlmFinishReason.LENGTH;
@@ -113,8 +148,8 @@ public final class LlmRetryClassifier {
             return result;
         }
 
-        // 5. finish_reason=stop with content
-        if ("stop".equalsIgnoreCase(finishReasonStr) && content != null && !content.isBlank()) {
+        // 5. finish_reason=stop with a content string: a finished completion, also when the string is empty
+        if ("stop".equalsIgnoreCase(finishReasonStr) && message != null && message.get("content") instanceof CharSequence) {
             result.finishReason = LlmFinishReason.STOP;
             return result;
         }
@@ -197,7 +232,42 @@ public final class LlmRetryClassifier {
         Integer completion = toInt(usage.get("completion_tokens"));
         Integer total = toInt(usage.get("total_tokens"));
         if (prompt == null && completion == null && total == null) return null;
-        return new LlmUsage(prompt, completion, total);
+        LlmUsage out = new LlmUsage(prompt, completion, total);
+        Map<?, ?> promptDetails = asMap(usage.get("prompt_tokens_details"));
+        if (promptDetails != null) out.cachedInputTokens = toInt(promptDetails.get("cached_tokens"));
+        Map<?, ?> completionDetails = asMap(usage.get("completion_tokens_details"));
+        if (completionDetails != null) out.reasoningOutputTokens = toInt(completionDetails.get("reasoning_tokens"));
+        return out;
+    }
+
+    /**
+     * The structured metadata of a response that is not text: response, choice, message and the complete usage object,
+     * copied so the result does not share maps with the parsed body. Absent and null values are left out, zero is kept.
+     */
+    static Map<String, Object> metadataOf(Map<String, Object> body, Map<?, ?> choice, Map<?, ?> message, Map<?, ?> usage) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        Map<String, Object> response = new LinkedHashMap<>();
+        if (body != null) for (String key : new String[] {"id", "object", "created", "model", "service_tier", "system_fingerprint"})
+            if (body.get(key) != null) response.put(key, body.get(key));
+        if (!response.isEmpty()) out.put("response", response);
+        Map<String, Object> choiceMd = new LinkedHashMap<>();
+        if (choice != null) {
+            if (choice.get("index") != null) choiceMd.put("index", choice.get("index"));
+            Object finish = choice.get("finish_reason") != null ? choice.get("finish_reason") : choice.get("finishReason");
+            if (finish != null) choiceMd.put("finish_reason", finish);
+            if (choice.get("logprobs") != null) choiceMd.put("logprobs", deepCopy(choice.get("logprobs")));
+        }
+        if (!choiceMd.isEmpty()) out.put("choice", choiceMd);
+        Map<String, Object> messageMd = new LinkedHashMap<>();
+        if (message != null && message.get("annotations") instanceof List && !((List<?>) message.get("annotations")).isEmpty())
+            messageMd.put("annotations", deepCopy(message.get("annotations")));
+        if (!messageMd.isEmpty()) out.put("message", messageMd);
+        if (usage != null && !usage.isEmpty()) out.put("usage", deepCopy(usage));
+        return out.isEmpty() ? null : out;
+    }
+
+    static Object deepCopy(Object value) {
+        return LlmJson.toObject(LlmJson.toJson(value));
     }
 
     static Integer toInt(Object o) {
