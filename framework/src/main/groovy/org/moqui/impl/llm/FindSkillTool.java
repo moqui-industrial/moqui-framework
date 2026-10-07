@@ -87,7 +87,18 @@ public class FindSkillTool implements LlmTool {
                 return result;
             }
             SkillUseGate.activate(LlmAgentLoop.currentClient(), chosen.name);
-            result.put("selected", toMap(ec, chosen, true));
+            Map<String, Object> selected = toMap(ec, chosen, true);
+            if (chosen.folderLocation != null) {
+                try {
+                    String digest = SkillIndex.digest(ec, chosen);
+                    selected.put("digest", digest);
+                    if (current != null) current.selectedSkillDigests.put(chosen.name, digest);
+                } catch (RuntimeException e) {
+                    selected.put("digestError", e.getMessage());
+                }
+            }
+            if (chosen.filesTruncated) selected.put("filesTruncated", true);
+            result.put("selected", selected);
             result.put("hint", "Skill " + chosen.name
                     + " is now the active skill. browse, GET request, and write_ui are allowed. "
                     + "run_service and other request methods run immediately only when risk is reversible; "

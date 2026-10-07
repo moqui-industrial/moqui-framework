@@ -246,6 +246,7 @@ test {
     include '**/TransactionCacheDbTests.class'
     include '**/LlmSkillTests.class'
     include '**/LlmSkillFolderTests.class'
+    include '**/LlmSkillAuditTests.class'
     include '**/LlmSkillAgentTests.class'
     include '**/LlmBrowseTests.class'
     include '**/LlmFindBasicTests.class'

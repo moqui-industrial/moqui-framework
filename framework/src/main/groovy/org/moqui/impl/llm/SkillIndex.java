@@ -52,21 +52,37 @@ public class SkillIndex {
         /** Folder skills only: location of the skill folder and the files in it, relative to it. */
         public String folderLocation;
         public List<String> files;
+        /** Folder skills: true when the listing stopped at {@link #MAX_SKILL_FILES}; the files after that point are not listed. */
+        public boolean filesTruncated;
+        /** Folder skills: how many files were left out of the listing and why (hidden, oversized, link, not a regular file). */
+        public Map<String, Integer> filesSkipped = new LinkedHashMap<>();
+        /** Problems found in the front matter (not YAML, a number where a string is required, a duplicate key). */
+        public List<String> problems = new ArrayList<>();
+        /** SHA-256 of the SKILL.md text as it was read. */
+        public String contentDigest;
     }
+
+    private static final java.util.regex.Pattern FRONT_MATTER =
+            java.util.regex.Pattern.compile("\\A---[ \\t]*\n(?:(.*?)\n)?---[ \\t]*(?:\n|\\z)", java.util.regex.Pattern.DOTALL);
+    static final int MAX_FRONT_MATTER_CHARS = 65536;
 
     public static SkillDoc parseMarkdown(String text, String sourceLocation) {
         SkillDoc doc = new SkillDoc();
         doc.sourceLocation = sourceLocation;
         if (text == null) { doc.body = ""; return doc; }
-        String t = text.replace("\r\n", "\n");
-        if (t.startsWith("---\n")) {
-            int end = t.indexOf("\n---", 4);
-            if (end > 0) {
-                parseFrontMatter(t.substring(4, end), doc.frontMatter);
-                doc.body = t.substring(end + 4).trim();
-            } else {
-                doc.body = t;
+        String t = text.replace("\r\n", "\n").replace('\r', '\n');
+        if (t.startsWith("\uFEFF")) t = t.substring(1);
+        doc.contentDigest = SkillFileAccess.sha256(t.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        java.util.regex.Matcher m = FRONT_MATTER.matcher(t);
+        if (m.find()) {
+            String fm = m.group(1) == null ? "" : m.group(1);
+            if (fm.length() > MAX_FRONT_MATTER_CHARS) doc.problems.add("front matter is longer than " + MAX_FRONT_MATTER_CHARS + " characters");
+            else if (!parseFrontMatterYaml(fm, doc.frontMatter, doc.problems)) {
+                // a flat skill written for the old line parser still loads; a folder skill with these problems is skipped
+                doc.frontMatter.clear();
+                parseFrontMatter(fm, doc.frontMatter);
             }
+            doc.body = t.substring(m.end()).trim();
         } else {
             doc.body = t;
         }
@@ -82,6 +98,64 @@ public class SkillIndex {
         doc.provenanceId = "LskpHuman";
         return doc;
     }
+
+    private static final java.util.Set<String> STRING_KEYS = new java.util.HashSet<>(Arrays.asList(
+            "name", "description", "license", "compatibility", "allowed-tools"));
+
+    /**
+     * Reads the front matter as YAML (SnakeYAML, safe constructor: no custom types, no aliases, no duplicate keys, bounded
+     * nesting) and flattens it into the map the rest of the code uses: a scalar is its string, a list is comma separated,
+     * a mapping gives "key.sub" entries. What the Agent Skills specification requires to be a string and is not (a name
+     * that is a number, a metadata value that is a list or a number) is reported in problems, not converted silently.
+     * Returns false when the text is not YAML at all.
+     */
+    static boolean parseFrontMatterYaml(String fm, Map<String, String> out, List<String> problems) {
+        Object doc;
+        try {
+            org.yaml.snakeyaml.LoaderOptions lo = new org.yaml.snakeyaml.LoaderOptions();
+            lo.setAllowDuplicateKeys(false);
+            lo.setMaxAliasesForCollections(0);
+            lo.setNestingDepthLimit(8);
+            lo.setCodePointLimit(MAX_FRONT_MATTER_CHARS * 2);
+            doc = new org.yaml.snakeyaml.Yaml(new org.yaml.snakeyaml.constructor.SafeConstructor(lo)).load(fm);
+        } catch (RuntimeException e) {
+            String msg = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage().split("\n")[0];
+            problems.add("front matter is not valid YAML: " + msg);
+            return false;
+        }
+        if (doc == null) return true;
+        if (!(doc instanceof Map)) { problems.add("front matter is not a mapping"); return false; }
+        for (Map.Entry<?, ?> e : ((Map<?, ?>) doc).entrySet()) {
+            if (!(e.getKey() instanceof String)) { problems.add("front matter key " + e.getKey() + " is not a string"); continue; }
+            String k = (String) e.getKey();
+            Object v = e.getValue();
+            if (v == null) { out.put(k, ""); continue; }
+            if (isScalar(v)) {
+                if (STRING_KEYS.contains(k) && !(v instanceof String)) problems.add(k + " must be a string");
+                out.put(k, String.valueOf(v).strip());
+            } else if (v instanceof List) {
+                List<String> items = new ArrayList<>();
+                for (Object item : (List<?>) v) {
+                    if (isScalar(item)) items.add(String.valueOf(item));
+                    else problems.add(k + " has a list item that is not a scalar");
+                }
+                if (STRING_KEYS.contains(k)) problems.add(k + " must be a string");
+                out.put(k, String.join(", ", items));
+            } else if (v instanceof Map) {
+                for (Map.Entry<?, ?> sub : ((Map<?, ?>) v).entrySet()) {
+                    String sk = String.valueOf(sub.getKey());
+                    Object sv = sub.getValue();
+                    if (sv == null) { out.put(k + "." + sk, ""); continue; }
+                    if (!isScalar(sv)) { problems.add(k + "." + sk + " must be a string"); continue; }
+                    if ("metadata".equals(k) && !(sv instanceof String)) problems.add("metadata." + sk + " must be a string (quote the value)");
+                    out.put(k + "." + sk, String.valueOf(sv).strip());
+                }
+            } else problems.add(k + " has a value that is not supported");
+        }
+        return true;
+    }
+
+    private static boolean isScalar(Object v) { return v instanceof String || v instanceof Number || v instanceof Boolean || v instanceof java.util.Date; }
 
     /**
      * Moqui keys (risk, profiles, services, screens). Flat skills may use them as top level keys; folder skills follow
@@ -105,7 +179,7 @@ public class SkillIndex {
      * Returns the problems; an empty list means the skill is valid.
      */
     public static List<String> validateAgentSkill(SkillDoc doc, String folderName) {
-        List<String> errors = new ArrayList<>();
+        List<String> errors = new ArrayList<>(doc.problems);
         String name = doc.frontMatter.get("name");
         if (name == null || name.isEmpty()) errors.add("name is required");
         else {
@@ -231,30 +305,52 @@ public class SkillIndex {
     }
     static final int MAX_SKILL_FILES = 500;
 
-    /** Every shipped skill, whatever its profiles. Use {@link #scanShipped(ExecutionContext, String)} to filter. */
-    public static List<SkillDoc> scanShipped(ExecutionContext ec) {
+    /**
+     * Every shipped skill, whatever its profiles. The order is fixed: components in their load order, and inside a
+     * skill directory by file name. When two skills have the same name the first one wins and the others are left out
+     * (see {@link #shippedDiagnostics}); the result never depends on the order a file system lists directories in.
+     */
+    public static List<SkillDoc> scanShipped(ExecutionContext ec) { return scanShipped(ec, (List<String>) null); }
+
+    /** What the scan left out and why: duplicate names, invalid skills, truncated listings. */
+    public static List<String> shippedDiagnostics(ExecutionContext ec) {
+        List<String> diag = new ArrayList<>();
+        scanShipped(ec, diag);
+        return diag;
+    }
+
+    static List<SkillDoc> scanShipped(ExecutionContext ec, List<String> diag) {
         List<SkillDoc> out = new ArrayList<>();
         if (ec == null || ec.getFactory() == null) return out;
         ExecutionContextFactoryImpl ecfi = (ExecutionContextFactoryImpl) ec.getFactory();
         Map<String, String> comps = ecfi.getComponentBaseLocations();
+        java.util.Set<String> seen = new java.util.HashSet<>();
         for (Map.Entry<String, String> e : comps.entrySet()) {
             String loc = e.getValue();
             if (loc == null) continue;
             String skillDir = loc.endsWith("/") ? loc + "skill" : loc + "/skill";
-            scanSkillDir(ec, skillDir, out);
+            List<SkillDoc> found = new ArrayList<>();
+            scanSkillDir(ec, skillDir, found, diag);
+            for (SkillDoc doc : found) {
+                if (seen.add(doc.name)) out.add(doc);
+                else if (diag != null) diag.add("skill " + doc.name + " at " + doc.sourceLocation + " is shadowed by an earlier skill with the same name");
+            }
         }
         return out;
     }
 
     /** Reads flat skill/*.md files and skill/&lt;name&gt;/SKILL.md folders from one skill directory. */
-    static void scanSkillDir(ExecutionContext ec, String skillDir, List<SkillDoc> out) {
+    static void scanSkillDir(ExecutionContext ec, String skillDir, List<SkillDoc> out) { scanSkillDir(ec, skillDir, out, null); }
+
+    static void scanSkillDir(ExecutionContext ec, String skillDir, List<SkillDoc> out, List<String> diag) {
         try {
             ResourceReference dir = ec.getResource().getLocationReference(skillDir);
             if (dir == null || !dir.getExists() || !dir.isDirectory()) return;
-            for (ResourceReference child : dir.getDirectoryEntries()) {
-                if (child == null) continue;
+            List<ResourceReference> entries = sortedEntries(dir);
+            Map<String, SkillDoc> inDir = new LinkedHashMap<>();
+            for (ResourceReference child : entries) {
                 String name = child.getFileName();
-                if (name == null) continue;
+                if (name == null || name.startsWith(".")) continue;
                 SkillDoc doc = null;
                 if (child.isDirectory()) {
                     ResourceReference skillFile = child.getChild("SKILL.md");
@@ -262,20 +358,42 @@ public class SkillIndex {
                         doc = parseMarkdown(skillFile.getText(), skillFile.getLocation());
                         List<String> problems = validateAgentSkill(doc, name);
                         if (!problems.isEmpty()) {
+                            String msg = "Skipping skill folder " + child.getLocation() + ": " + String.join("; ", problems);
                             logger.warn("Skipping skill folder {}: {}", child.getLocation(), String.join("; ", problems));
+                            if (diag != null) diag.add(msg);
                             continue;
                         }
                         doc.folderLocation = child.getLocation();
-                        doc.files = listSkillFiles(child);
+                        listSkillFiles(child, doc);
+                        if (doc.filesTruncated && diag != null)
+                            diag.add("skill " + doc.name + ": the file list stops at " + MAX_SKILL_FILES + " files, the rest is not available");
                     }
                 } else if (name.endsWith(".md")) {
                     doc = parseMarkdown(child.getText(), child.getLocation());
                 }
-                if (doc != null && doc.name != null && !doc.name.isEmpty()) out.add(doc);
+                if (doc == null || doc.name == null || doc.name.isEmpty()) continue;
+                SkillDoc earlier = inDir.get(doc.name);
+                if (earlier == null) inDir.put(doc.name, doc);
+                else {
+                    // a folder skill wins over a flat file of the same name; otherwise the first by file name stays
+                    boolean replace = earlier.folderLocation == null && doc.folderLocation != null;
+                    if (diag != null) diag.add("skills named " + doc.name + " at " + earlier.sourceLocation + " and " + doc.sourceLocation
+                            + " in one directory; " + (replace ? doc.sourceLocation : earlier.sourceLocation) + " is used");
+                    if (replace) inDir.put(doc.name, doc);
+                }
             }
+            out.addAll(inDir.values());
         } catch (Throwable t) {
             if (logger.isDebugEnabled()) logger.debug("Skill scan skipped for " + skillDir + ": " + t.getMessage());
         }
+    }
+
+    /** Directory entries ordered by name, so what is listed or cut off never depends on the file system. */
+    private static List<ResourceReference> sortedEntries(ResourceReference dir) {
+        List<ResourceReference> entries = new ArrayList<>(dir.getDirectoryEntries());
+        entries.removeIf(r -> r == null || r.getFileName() == null);
+        entries.sort((x, y) -> x.getFileName().compareTo(y.getFileName()));
+        return entries;
     }
 
     /** Shipped skills the profile may see. A null profile sees only skills without a profiles restriction. */
@@ -285,27 +403,63 @@ public class SkillIndex {
         return out;
     }
 
-    /** Files under a skill folder, relative paths, sorted. Skips agents/ (tool metadata), dot files and big files. */
+    /** Files under a skill folder, relative paths, in a fixed order. See {@link #listSkillFiles(ResourceReference, SkillDoc)}. */
     static List<String> listSkillFiles(ResourceReference folder) {
-        List<String> out = new ArrayList<>();
-        collectSkillFiles(folder, "", out, maxSkillFileBytes());
-        Collections.sort(out);
-        return out;
+        SkillDoc scratch = new SkillDoc();
+        listSkillFiles(folder, scratch);
+        return scratch.files;
     }
 
-    private static void collectSkillFiles(ResourceReference dir, String prefix, List<String> out, long maxBytes) {
-        for (ResourceReference child : dir.getDirectoryEntries()) {
-            if (out.size() >= MAX_SKILL_FILES) return;
+    /**
+     * Fills doc.files with the files under the folder, in path order (each directory is walked by name), up to
+     * {@link #MAX_SKILL_FILES}. It leaves out, and counts in doc.filesSkipped, agents/ (tool metadata), dot files,
+     * files over the size limit, links and anything that is not a regular file; when the limit cuts the list,
+     * doc.filesTruncated says so and the files after the cut are not available.
+     */
+    static void listSkillFiles(ResourceReference folder, SkillDoc doc) {
+        doc.files = new ArrayList<>();
+        doc.filesSkipped = new LinkedHashMap<>();
+        doc.filesTruncated = false;
+        collectSkillFiles(folder, "", doc, maxSkillFileBytes());
+    }
+
+    private static void skipped(SkillDoc doc, String why) { doc.filesSkipped.merge(why, 1, Integer::sum); }
+
+    private static void collectSkillFiles(ResourceReference dir, String prefix, SkillDoc doc, long maxBytes) {
+        for (ResourceReference child : sortedEntries(dir)) {
+            if (doc.filesTruncated) return;
             String name = child.getFileName();
-            if (name == null || name.startsWith(".")) continue;
+            if (name.startsWith(".")) { skipped(doc, "hidden"); continue; }
+            java.nio.file.Path local = SkillFileAccess.localPath(child);
+            if (local != null && java.nio.file.Files.isSymbolicLink(local)) { skipped(doc, "link"); continue; }
             if (child.isDirectory()) {
-                if (prefix.isEmpty() && "agents".equals(name)) continue;
-                collectSkillFiles(child, prefix + name + "/", out, maxBytes);
+                if (prefix.isEmpty() && "agents".equals(name)) { skipped(doc, "agents"); continue; }
+                collectSkillFiles(child, prefix + name + "/", doc, maxBytes);
             } else if (!(prefix.isEmpty() && "SKILL.md".equals(name))) {
-                if (child.getSize() > maxBytes) continue;
-                out.add(prefix + name);
+                if (local != null && !java.nio.file.Files.isRegularFile(local, java.nio.file.LinkOption.NOFOLLOW_LINKS)) { skipped(doc, "not a regular file"); continue; }
+                if (child.getSize() > maxBytes) { skipped(doc, "over " + maxBytes + " bytes"); continue; }
+                if (doc.files.size() >= MAX_SKILL_FILES) { doc.filesTruncated = true; return; }
+                doc.files.add(prefix + name);
             }
         }
+    }
+
+    /**
+     * What the skill is made of: SHA-256 over the SKILL.md text and, for a folder skill, every listed file by path,
+     * size and content hash. A run records it when the skill is first used and refuses to go on when it changes.
+     * Throws when a listed file cannot be read, because a digest that skipped it would hide a change.
+     */
+    public static String digest(ExecutionContext ec, SkillDoc doc) {
+        if (doc == null) return null;
+        StringBuilder sb = new StringBuilder(doc.contentDigest == null ? "" : doc.contentDigest).append('\n');
+        if (doc.folderLocation != null && doc.files != null) {
+            for (String f : doc.files) {
+                SkillFileAccess.Content c = SkillFileAccess.read(ec, doc, f, maxSkillFileBytes());
+                sb.append(f).append('\0').append(c.size()).append('\0').append(c.sha256).append('\n');
+            }
+            if (doc.filesTruncated) sb.append("truncated\n");
+        }
+        return SkillFileAccess.sha256(sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 
     /**

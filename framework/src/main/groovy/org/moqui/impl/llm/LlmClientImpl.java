@@ -104,6 +104,8 @@ public class LlmClientImpl implements LlmClient {
     boolean forceSkillUse = false;
     /** Conversation-scoped skill activated via find_skill select. */
     String activeSkillName = null;
+    /** Digest of each skill at the moment find_skill selected it in this client; see {@link SkillIndex#digest}. */
+    final java.util.concurrent.ConcurrentHashMap<String, String> selectedSkillDigests = new java.util.concurrent.ConcurrentHashMap<>();
 
     public LlmClientImpl(ExecutionContext ec, LlmFacadeImpl.ProfileState profile) {
         this(ec, profile, null);
@@ -217,6 +219,8 @@ public class LlmClientImpl implements LlmClient {
     }
     public boolean isForceSkillUse() { return forceSkillUse; }
     public String getActiveSkillName() { return activeSkillName; }
+    /** The digest a skill had when it was selected in this client, or null when it was not selected here. */
+    public String getSelectedSkillDigest(String skillName) { return skillName == null ? null : selectedSkillDigests.get(skillName); }
 
     @Override
     public LlmClient maxIterations(int n) {
