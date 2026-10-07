@@ -299,7 +299,7 @@ public class SkillIndex {
     }
 
     /** Largest file listed for a folder skill; set -Dmoqui.llm.skill.file.max.bytes to change. */
-    static long maxSkillFileBytes() {
+    public static long maxSkillFileBytes() {
         try { return Long.parseLong(System.getProperty("moqui.llm.skill.file.max.bytes", "262144")); }
         catch (NumberFormatException e) { return 262144L; }
     }
@@ -451,14 +451,22 @@ public class SkillIndex {
      */
     public static String digest(ExecutionContext ec, SkillDoc doc) {
         if (doc == null) return null;
+        return digestOf(doc, manifest(ec, doc));
+    }
+
+    /** Path to SHA-256 of every listed file of a folder skill, in listing order; empty for a flat skill. */
+    public static Map<String, String> manifest(ExecutionContext ec, SkillDoc doc) {
+        Map<String, String> m = new LinkedHashMap<>();
+        if (doc != null && doc.folderLocation != null && doc.files != null)
+            for (String f : doc.files) m.put(f, SkillFileAccess.read(ec, doc, f, maxSkillFileBytes()).sha256);
+        return m;
+    }
+
+    /** The digest of a skill from its SKILL.md hash, its file hashes and whether its list was cut. */
+    public static String digestOf(SkillDoc doc, Map<String, String> manifest) {
         StringBuilder sb = new StringBuilder(doc.contentDigest == null ? "" : doc.contentDigest).append('\n');
-        if (doc.folderLocation != null && doc.files != null) {
-            for (String f : doc.files) {
-                SkillFileAccess.Content c = SkillFileAccess.read(ec, doc, f, maxSkillFileBytes());
-                sb.append(f).append('\0').append(c.size()).append('\0').append(c.sha256).append('\n');
-            }
-            if (doc.filesTruncated) sb.append("truncated\n");
-        }
+        for (Map.Entry<String, String> e : manifest.entrySet()) sb.append(e.getKey()).append('\0').append(e.getValue()).append('\n');
+        if (doc.filesTruncated) sb.append("truncated\n");
         return SkillFileAccess.sha256(sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 
