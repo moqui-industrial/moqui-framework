@@ -262,16 +262,6 @@ public final class LlmRunStore {
         result
     }
 
-    /** Clears the lease of a run that is no longer running; a no-op when another worker holds a newer fence. */
-    static void releaseLease(ExecutionContext ec, String runId, String workerId, long fencingToken) {
-        isolated(ec) {
-            EntityValue run = ownedRun(ec, runId, true)
-            if (run.workerId != workerId || ((run.fencingToken ?: 0) as Number).longValue() != fencingToken) return
-            if (run.statusId == RUNNING || run.statusId == RECOVERING) return
-            run.setAll([workerId: null, leaseUntil: null, lastUpdatedDate: ec.user.nowTimestamp]).update()
-        }
-    }
-
     static boolean isCancelRequested(ExecutionContext ec, String runId) {
         EntityValue run = disabled(ec) {
             ec.entity.find('moqui.llm.LlmRun').condition('runId', runId).selectField('cancelRequested,statusId')
