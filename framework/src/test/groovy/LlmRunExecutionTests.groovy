@@ -189,6 +189,60 @@ class LlmRunExecutionTests extends Specification {
         noted.size() == 1
     }
 
+    private Map queuedRun(Map envelope) {
+        Map run = LlmRunStore.createRun(ec, [profileName: PROFILE, maxIterations: 4, continuationModeEnumId: 'LlmContLocal',
+                context: [org.moqui.llm.LlmItem.message('user', [org.moqui.llm.LlmContentPart.inputText('use your tools')])],
+                checkpoint: [phase: 'ready_provider'], envelope: envelope])
+        runIds << (run.runId as String)
+        run
+    }
+
+    private List<String> toolNamesSeenBy(Map run) {
+        LlmRunExecutor.dispatch(ec, run.runId as String)
+        awaitStatus(run.runId as String, LlmRunStore.COMPLETE)
+        (protocol.lastRequest?.tools ?: []).collect { it.name }
+    }
+
+    def "the tools of a run are the ones it was submitted with, whatever the profile says when it executes"() {
+        given:
+        protocol.handler = { req -> FakeLlmProtocol.stop('done') }
+        def profile = ((LlmFacadeImpl) ec.llm).getProfileState(PROFILE)
+        def probe = (org.moqui.impl.llm.LlmClientImpl) ec.llm.getClient(PROFILE)
+        LlmRunExecutor.configureClient(probe, profile)
+        Map envelope = probe.runEnvelope()
+        Map run = queuedRun(envelope)
+        when: 'the profile loses its service before the run executes'
+        profile.allowedServices = []
+        List<String> seen = toolNamesSeenBy(run)
+        then:
+        envelope.tools*.name.contains('ask')
+        seen.contains('ask')
+    }
+
+    def "a run submitted before the envelope existed takes the profile as it is"() {
+        given:
+        protocol.handler = { req -> FakeLlmProtocol.stop('done') }
+        Map run = queuedRun(null)
+        when:
+        List<String> seen = toolNamesSeenBy(run)
+        then:
+        seen.contains('ask')
+    }
+
+    def "a run whose tool can no longer be rebuilt fails with the reason and calls no provider"() {
+        given:
+        protocol.handler = { req -> throw new AssertionError('the provider must not be called') }
+        Map run = queuedRun([instructions: 'x', tools: [[name: 'gone', kind: 'service', serviceName: 'org.moqui.nothing.Gone.run#Nothing',
+                                                         parametersSchema: [type: 'object']]]])
+        when:
+        LlmRunExecutor.dispatch(ec, run.runId as String)
+        Map failed = awaitStatus(run.runId as String, LlmRunStore.FAILED)
+        then:
+        failed.statusId == LlmRunStore.FAILED
+        failed.errorMessage.contains('cannot be rebuilt')
+        protocol.chatCount == 0
+    }
+
     def "a run that asks for confirmation ends the job and confirm resumes it"() {
         given:
         protocol.handler = { req ->

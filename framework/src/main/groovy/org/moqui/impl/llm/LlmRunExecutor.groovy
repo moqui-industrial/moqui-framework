@@ -14,8 +14,6 @@
 package org.moqui.impl.llm
 
 import org.moqui.context.ExecutionContext
-import org.moqui.impl.context.ExecutionContextFactoryImpl
-import org.moqui.impl.context.ExecutionContextImpl
 import org.moqui.impl.context.UserFacadeImpl
 import org.moqui.llm.LlmContentPart
 import org.moqui.llm.LlmItem
@@ -23,10 +21,7 @@ import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.Executors
-import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.Semaphore
-import java.util.concurrent.TimeUnit
 
 /**
  * Runs a durable LlmRun outside any HTTP request. A ServiceJob (execute_LlmRun) calls execute(); the run, not the job,
@@ -36,7 +31,7 @@ import java.util.concurrent.TimeUnit
 class LlmRunExecutor {
     private static final Logger logger = LoggerFactory.getLogger(LlmRunExecutor.class)
     static final String JOB_NAME = 'execute_LlmRun'
-    static final int LEASE_SECONDS = 60
+    static final int LEASE_SECONDS = LlmRunLease.LEASE_SECONDS
     /** Tools attached when the profile allows them; typed services come from the profile's allowed-service list. */
     static final List<String> BUILTIN_TOOLS = ['find_skill', 'browse', 'run_service', 'enter_sim', 'find_basic']
     private static final Map<String, Semaphore> PERMITS = new ConcurrentHashMap<>()
@@ -49,6 +44,14 @@ class LlmRunExecutor {
         create.context = [LlmItem.message('user', [LlmContentPart.inputText(objective)])]
         create.checkpoint = [phase: 'ready_provider']
         create.continuationModeEnumId = 'LlmContLocal'
+        // what the run will be allowed and told is fixed now: a profile edited before it executes (or after a crash)
+        // does not change the tools or instructions it was submitted with
+        LlmFacadeImpl.ProfileState profile = ((LlmFacadeImpl) ec.llm).getProfileState(request.profileName as String)
+        if (profile != null) {
+            LlmClientImpl client = (LlmClientImpl) ec.llm.getClient(request.profileName as String)
+            configureClient(client, profile)
+            create.envelope = client.runEnvelope()
+        }
         Map<String, Object> run = LlmRunStore.createRun(ec, create)
         dispatch(ec, run.runId as String)
         LlmRunStore.getRun(ec, run.runId as String)
@@ -75,6 +78,9 @@ class LlmRunExecutor {
         if (profile == null) return fail(ec, run, "No LLM profile named '${run.profileName}'")
         if (run.continuationModeEnumId == 'LlmContRemote')
             return fail(ec, run, 'Background execution supports local item trajectories only (LlmContLocal)')
+        // a tool that was part of the run when it was submitted and cannot be rebuilt now is a failure, not a smaller toolbox
+        String unrebuildable = LlmClientImpl.unrecoverableReason(run)
+        if (unrebuildable) return fail(ec, run, unrebuildable)
         if (run.deadline instanceof Date && ((Date) run.deadline).before(new Date(ec.user.nowTimestamp.time)))
             return fail(ec, run, 'Run deadline passed before execution started')
 
@@ -85,9 +91,8 @@ class LlmRunExecutor {
             Map<String, Object> claimed = LlmRunStore.claimQueued(ec, runId, workerId, LEASE_SECONDS)
             if (claimed == null) return summary(LlmRunStore.getRun(ec, runId), false, 'run was not claimable')
             long fence = ((claimed.fencingToken ?: 0) as Number).longValue()
-            Heartbeat heartbeat = new Heartbeat((ExecutionContextFactoryImpl) ec.factory, ec.user.username, runId,
-                    workerId, fence)
-            heartbeat.start()
+            // the same lease keeper the client uses: renews while the worker runs, says when the lease was lost
+            LlmRunLease heartbeat = LlmRunLease.start(ec, runId, workerId, fence)
             Throwable failure = null
             String content = null
             try {
@@ -95,7 +100,7 @@ class LlmRunExecutor {
             } catch (Throwable t) {
                 failure = t
             } finally {
-                heartbeat.stop()
+                heartbeat.close()
             }
             Map<String, Object> after = LlmRunStore.getRun(ec, runId)
             if (failure != null && !isCancellation(failure) && !terminal(after.statusId as String)) {
@@ -121,13 +126,19 @@ class LlmRunExecutor {
         if (items.isEmpty() && run.objective) client.user(run.objective as String)
         else client.inputItems(items)
         if (run.maxIterations) client.maxIterations(((Number) run.maxIterations).intValue())
+        // a run submitted before the envelope existed has none and takes the profile as it is now
+        if (run.envelope == null) configureClient(client, profile)
+        org.moqui.llm.LlmResponse response = client.call()
+        // a yielded response means the run is waiting; there is no final text yet
+        response != null && !response.yielded ? response.content : null
+    }
+
+    /** The instructions and tools of an executor run, from the profile. */
+    private static void configureClient(LlmClientImpl client, LlmFacadeImpl.ProfileState profile) {
         LlmGateway.applySystem(client, [:])
         LlmGateway.attachServletTools(client, profile, BUILTIN_TOOLS)
         for (LlmFacadeImpl.ServiceAllow allowed : profile.allowedServices)
             client.tool(new ServiceCallTool(allowed.serviceName, allowed.functionName, allowed.description))
-        org.moqui.llm.LlmResponse response = client.call()
-        // a yielded response means the run is waiting; there is no final text yet
-        response != null && !response.yielded ? response.content : null
     }
 
     private static Map<String, Object> fail(ExecutionContext ec, Map<String, Object> run, String message) {
@@ -201,38 +212,6 @@ class LlmRunExecutor {
         finally {
             ec.user.logoutUser()
             if (original) ((UserFacadeImpl) ec.user).internalLoginUser(original, false)
-        }
-    }
-
-    /** Keeps the lease of a running run alive so the recovery job does not take it over. */
-    static class Heartbeat implements Runnable {
-        private final ExecutionContextFactoryImpl ecfi
-        private final String username, runId, workerId
-        private final long fence
-        private final ScheduledExecutorService scheduler
-
-        Heartbeat(ExecutionContextFactoryImpl ecfi, String username, String runId, String workerId, long fence) {
-            this.ecfi = ecfi; this.username = username; this.runId = runId; this.workerId = workerId; this.fence = fence
-            this.scheduler = Executors.newSingleThreadScheduledExecutor({ Runnable r ->
-                Thread t = new Thread(r, "llm-run-heartbeat-${runId}"); t.daemon = true; t } as java.util.concurrent.ThreadFactory)
-        }
-        void start() {
-            long period = Math.max((long) (LEASE_SECONDS / 3), 1L)
-            scheduler.scheduleAtFixedRate(this, period, period, TimeUnit.SECONDS)
-        }
-        void stop() { scheduler.shutdownNow() }
-
-        @Override void run() {
-            ExecutionContextImpl tec = null
-            try {
-                tec = ecfi.getEci()
-                if (!((UserFacadeImpl) tec.user).internalLoginUser(username, false)) return
-                LlmRunStore.renewLease(tec, runId, workerId, fence, LEASE_SECONDS)
-            } catch (Throwable t) {
-                logger.warn("LLM run ${runId} lease renewal failed: ${t.message}")
-            } finally {
-                tec?.destroy()
-            }
         }
     }
 }
