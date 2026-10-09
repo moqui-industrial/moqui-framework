@@ -62,6 +62,8 @@ public final class LlmRetryClassifier {
         if (errorMessage == null) errorMessage = str(body != null ? body.get("message") : null);
         result.errorMessage = errorMessage;
         result.providerErrorCode = errorCode != null ? errorCode : errorType;
+        result.providerErrorType = errorType;
+        result.providerErrorParam = str(error != null ? error.get("param") : null);
 
         if (body != null) {
             result.model = str(body.get("model"));
@@ -205,6 +207,13 @@ public final class LlmRetryClassifier {
         catch (Exception e) { return null; }
     }
 
+    static Long toLong(Object o) {
+        if (o == null) return null;
+        if (o instanceof Number) return ((Number) o).longValue();
+        try { return Long.parseLong(o.toString().trim()); }
+        catch (Exception e) { return null; }
+    }
+
     static String str(Object o) {
         if (o == null) return null;
         String s = o.toString();
@@ -213,6 +222,11 @@ public final class LlmRetryClassifier {
 
     static Map<?, ?> asMap(Object o) {
         return o instanceof Map ? (Map<?, ?>) o : null;
+    }
+
+    @SuppressWarnings("unchecked")
+    static Map<String, Object> asStringObjectMap(Object value) {
+        return value instanceof Map ? (Map<String, Object>) value : null;
     }
 
     /** DeepSeek/Qwen/llama.cpp thinking fields on message or delta. */

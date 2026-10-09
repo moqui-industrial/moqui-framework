@@ -65,6 +65,9 @@ public class RunServiceTool implements LlmTool {
         serviceName = serviceName.trim();
         if (ec == null || ec.getService() == null)
             return error("no ExecutionContext for service call");
+        ServiceDefinition sd = lookupService(ec, serviceName);
+        String visibilityError = ServiceCallTool.requireMcpVisibleService(ec, sd);
+        if (visibilityError != null) return error(visibilityError);
         String authError = requireAuthenticatedService(ec, serviceName);
         if (authError != null) return error(authError);
         Map<String, Object> in = ServiceCallTool.sanitizeArguments(asMap(args.get("parameters")));
@@ -126,14 +129,18 @@ public class RunServiceTool implements LlmTool {
      * Entity-auto names (create#Entity) have no ServiceDefinition; entity authz still runs.
      */
     static String requireAuthenticatedService(ExecutionContext ec, String serviceName) {
-        ServiceFacade sf = ec.getService();
-        if (!(sf instanceof ServiceFacadeImpl)) return null;
-        ServiceFacadeImpl sfi = (ServiceFacadeImpl) sf;
-        if (!sfi.isServiceDefined(serviceName)) return null;
-        ServiceDefinition sd = sfi.getServiceDefinition(serviceName);
+        ServiceDefinition sd = lookupService(ec, serviceName);
         if (sd == null) return null;
         if (!"true".equals(sd.authenticate))
             return "service " + serviceName + " is not available to run_service";
         return null;
+    }
+
+    static ServiceDefinition lookupService(ExecutionContext ec, String serviceName) {
+        ServiceFacade sf = ec.getService();
+        if (!(sf instanceof ServiceFacadeImpl)) return null;
+        ServiceFacadeImpl sfi = (ServiceFacadeImpl) sf;
+        if (!sfi.isServiceDefined(serviceName)) return null;
+        return sfi.getServiceDefinition(serviceName);
     }
 }

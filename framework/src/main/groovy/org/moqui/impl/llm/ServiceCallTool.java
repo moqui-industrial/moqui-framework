@@ -15,6 +15,8 @@ package org.moqui.impl.llm;
 
 import org.moqui.Moqui;
 import org.moqui.context.ExecutionContext;
+import org.moqui.impl.context.ArtifactExecutionFacadeImpl;
+import org.moqui.impl.context.ExecutionContextImpl;
 import org.moqui.impl.service.ServiceDefinition;
 import org.moqui.impl.service.ServiceFacadeImpl;
 import java.util.Arrays;
@@ -134,6 +136,7 @@ public class ServiceCallTool implements LlmTool {
         return schema;
     }
 
+    public String getServiceName() { return serviceName; }
     @Override public String getName() { return functionName; }
     @Override public String getDescription() { return description; }
     @Override public Map<String, Object> getParametersSchema() { return schema; }
@@ -143,6 +146,9 @@ public class ServiceCallTool implements LlmTool {
     public Object execute(Map<String, Object> arguments, ExecutionContext ec) {
         if (ec == null || ec.getService() == null)
             return error("no ExecutionContext for service call");
+        ServiceDefinition sd = lookupService(serviceName);
+        String visibilityError = requireMcpVisibleService(ec, sd);
+        if (visibilityError != null) return error(visibilityError);
         String authError = RunServiceTool.requireAuthenticatedService(ec, serviceName);
         if (authError != null) return error(authError);
         Map<String, Object> in = sanitizeArguments(arguments);
@@ -174,6 +180,19 @@ public class ServiceCallTool implements LlmTool {
         if (key == null || key.isEmpty()) return false;
         if (SKIP_FIELDS.contains(key)) return true;
         return SKIP_FIELDS_CI.contains(key.toLowerCase(Locale.ROOT));
+    }
+
+    static String requireMcpVisibleService(ExecutionContext ec, ServiceDefinition sd) {
+        if (sd == null) return null;
+        if (!sd.allowRemote) return "service " + sd.serviceName + " is not available for remote invocation";
+        if (!(ec instanceof ExecutionContextImpl)) return "service " + sd.serviceName + " is not visible for current user";
+        try {
+            if (!ArtifactExecutionFacadeImpl.isPermitted("AT_SERVICE:AUTHZA_VIEW:" + sd.serviceName, (ExecutionContextImpl) ec))
+                return "service " + sd.serviceName + " is not visible for current user";
+        } catch (Throwable t) {
+            return "service " + sd.serviceName + " is not visible for current user";
+        }
+        return null;
     }
 
     static Map<String, Object> error(String message) {

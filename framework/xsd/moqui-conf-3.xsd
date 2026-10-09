@@ -650,7 +650,9 @@ along with this software (see the LICENSE.md file). If not, see
                 <xs:attribute name="name" type="xs:string" use="required"/>
                 <xs:attribute name="protocol" type="xs:string" default="org.moqui.impl.llm.OpenAiCompatProtocol"/>
                 <xs:attribute name="url" type="xs:string"/>
-                <xs:attribute name="path" type="xs:string" default="/v1/chat/completions"/>
+                <xs:attribute name="path" type="xs:string" default="/v1/chat/completions">
+                    <xs:annotation><xs:documentation>Default path is /v1/chat/completions for OpenAiCompatProtocol and /v1/responses for OpenResponsesProtocol/OpenAiResponsesProtocol when omitted.</xs:documentation></xs:annotation>
+                </xs:attribute>
                 <xs:attribute name="api-key" type="xs:string"/>
                 <xs:attribute name="auth-header-name" type="xs:string" default="Authorization"/>
                 <xs:attribute name="auth-header-pattern" type="xs:string" default="Bearer ${api-key}"/>

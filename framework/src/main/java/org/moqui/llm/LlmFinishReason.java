@@ -14,5 +14,7 @@
 package org.moqui.llm;
 
 public enum LlmFinishReason {
-    STOP, LENGTH, CONTEXT_OVERFLOW, TOOL_CALLS, CONTENT_FILTER, EMPTY, ERROR, MAX_ITERATIONS
+    STOP, LENGTH, CONTEXT_OVERFLOW, TOOL_CALLS, CONTENT_FILTER, EMPTY, ERROR, MAX_ITERATIONS,
+    /** The provider accepted the request and is still working on it (queued, in progress); there is no answer yet. */
+    PENDING
 }

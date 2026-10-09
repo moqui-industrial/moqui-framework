@@ -45,7 +45,29 @@ final class LlmJson {
         mapper.registerModule(module);
     }
 
+    /**
+     * Same mapper, but a null stays a null. Used for what must be kept exactly: the body that is sent and the raw
+     * payloads, options and usage a provider returned, where an explicit null differs from an absent field.
+     */
+    static final ObjectMapper exact = mapper.copy().setSerializationInclusion(JsonInclude.Include.ALWAYS);
+
+    /** Reads items and their parts leniently: a field a later version added must not make a stored run unreadable. */
+    private static final ObjectMapper lenient = mapper.copy().configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+
+    static org.moqui.llm.LlmItem itemFromStored(Map<?, ?> map) {
+        return lenient.convertValue(map, org.moqui.llm.LlmItem.class);
+    }
+
     private LlmJson() { }
+
+    static String toExactJson(Object jsonObject) {
+        if (jsonObject instanceof String) return (String) jsonObject;
+        try {
+            return exact.writeValueAsString(jsonObject);
+        } catch (Exception e) {
+            throw new BaseException("Error writing JSON", e);
+        }
+    }
 
     static String toJson(Object jsonObject) {
         if (jsonObject instanceof String) return (String) jsonObject;
