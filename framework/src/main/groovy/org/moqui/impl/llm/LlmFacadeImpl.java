@@ -107,6 +107,11 @@ public class LlmFacadeImpl implements LlmFacade {
             } catch (Throwable t) {
                 logger.error("Error destroying LLM request factory for profile " + state.name, t);
             }
+            try {
+                if (state.protocol != null) state.protocol.close();
+            } catch (Throwable t) {
+                logger.error("Error closing the protocol connections of LLM profile " + state.name, t);
+            }
         }
         profileByName.clear();
     }
@@ -195,6 +200,14 @@ public class LlmFacadeImpl implements LlmFacade {
         if (conversationId == null || token <= 0L) return;
         activeTurns.remove(conversationId, token);
     }
+    /** Closes the persistent connections of a conversation or a run on every profile: the thing they belonged to is gone. */
+    void closeSessionsOfScope(String scope) {
+        for (ProfileState state : new ArrayList<>(profileByName.values())) {
+            try { if (state.protocol != null) state.protocol.closeSessionsOfScope(scope); }
+            catch (RuntimeException e) { logger.warn("Could not close the connections of " + scope + " on profile " + state.name + ": " + e.getMessage()); }
+        }
+    }
+
     public void clearCancelled(String conversationId) {
         if (conversationId != null) cancelledIds.remove(conversationId);
     }
@@ -343,7 +356,9 @@ public class LlmFacadeImpl implements LlmFacade {
             // ${api-key} to empty (api - key) and would force Azure onto Bearer.
             String authPatternRaw = node.getAttributes() != null ? node.getAttributes().get("auth-header-pattern") : null;
             String url = node.attribute("url");
-            String path = nvl(node.attribute("path"), OpenAiCompatProtocol.DEFAULT_PATH);
+            String protocolClass = nvl(node.attribute("protocol"), DEFAULT_PROTOCOL);
+            String defaultPath = defaultPathForProtocol(protocolClass);
+            String path = nvl(node.attribute("path"), defaultPath);
             String apiKey = node.attribute("api-key");
             if (apiKey != null) apiKey = apiKey.trim();
             String authHeaderName = nvl(node.attribute("auth-header-name"), "Authorization");
@@ -420,7 +435,6 @@ public class LlmFacadeImpl implements LlmFacade {
             RestClient.PooledRequestFactory rf = new RestClient.PooledRequestFactory("llm-" + name);
             rf.poolSize(poolMax).queueSize(queueSize).init();
 
-            String protocolClass = nvl(node.attribute("protocol"), DEFAULT_PROTOCOL);
             LlmProtocol protocol;
             try {
                 Class<?> cls = ecfi.getClassLoader().loadClass(protocolClass);
@@ -438,6 +452,12 @@ public class LlmFacadeImpl implements LlmFacade {
                     Collections.unmodifiableList(allowedPaths), allowWriteUi, ssePingSeconds,
                     systemLocation, allowClientSystem, allowBrowse, allowRunService, allowUnprefixedRequest,
                     allowEnterSim, allowVueSfc, summarizeConversation, Collections.unmodifiableList(allowedBasic));
+        }
+
+        public static String defaultPathForProtocol(String protocolClass) {
+            return ("org.moqui.impl.llm.OpenResponsesProtocol".equals(protocolClass)
+                    || "org.moqui.impl.llm.OpenAiResponsesProtocol".equals(protocolClass))
+                    ? OpenResponsesProtocol.DEFAULT_PATH : OpenAiCompatProtocol.DEFAULT_PATH;
         }
 
         /** Test helper: no HTTP pool. */

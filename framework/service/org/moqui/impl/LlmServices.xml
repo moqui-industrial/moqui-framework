@@ -20,6 +20,7 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="callLogsRemoved" type="Long"/>
             <parameter name="messagesRemoved" type="Long"/>
             <parameter name="conversationsRemoved" type="Long"/>
+            <parameter name="runsRemoved" type="Long"/>
         </out-parameters>
         <actions><script>
             import org.moqui.context.ExecutionContext
@@ -33,28 +34,465 @@ along with this software (see the LICENSE.md file). If not, see
                     .condition("lastMessageDate", EntityCondition.LESS_THAN, basisTimestamp)
                     .disableAuthz().list()
             def oldIds = oldConvs.collect { it.conversationId }.findAll { it }
+            // the searchable copy of content goes with the content
+            def deleteContentProjection = { List itemIds ->
+                if (!itemIds) return
+                def contentIds = ec.entity.find("moqui.llm.LlmContent").condition("llmItemId", EntityCondition.IN, itemIds)
+                        .selectField("llmContentId").disableAuthz().list()*.llmContentId
+                if (contentIds) ec.entity.find("moqui.llm.LlmContextProjection").condition("sourceType", "content")
+                        .condition("sourceId", EntityCondition.IN, contentIds).disableAuthz().deleteAll()
+            }
+            def terminalStatuses = ["LlmRunComplete", "LlmRunFailed", "LlmRunCancelled"]
+            def activeRuns = ec.entity.find("moqui.llm.LlmRun")
+                    .condition("statusId", EntityCondition.NOT_IN, terminalStatuses).disableAuthz().list()
+            def activeConversationIds = activeRuns.collect { it.conversationId }.findAll { it } as Set
+            oldIds.removeAll(activeConversationIds)
+            def oldTerminalRuns = ec.entity.find("moqui.llm.LlmRun")
+                    .condition("statusId", EntityCondition.IN, terminalStatuses)
+                    .condition("completedDate", EntityCondition.LESS_THAN, basisTimestamp).disableAuthz().list()
+            def oldTerminalRunIds = oldTerminalRuns.collect { it.runId }.findAll { it }
             callLogsRemoved = 0L
             messagesRemoved = 0L
             conversationsRemoved = 0L
-            if (oldIds) {
-                callLogsRemoved += ec.entity.find("moqui.llm.LlmCallLog")
-                        .condition("conversationId", EntityCondition.IN, oldIds)
-                        .disableAuthz().deleteAll()
-                messagesRemoved += ec.entity.find("moqui.llm.LlmMessage")
-                        .condition("conversationId", EntityCondition.IN, oldIds)
-                        .disableAuthz().deleteAll()
-                conversationsRemoved += ec.entity.find("moqui.llm.LlmConversation")
-                        .condition("conversationId", EntityCondition.IN, oldIds)
-                        .disableAuthz().deleteAll()
+            runsRemoved = 0L
+            // One conversation at a time, with its row locked and the decision made again with what is true now: a
+            // conversation that was picked up again after the list above was read is left alone, and only what is older
+            // than the limit is removed, so nothing a run wrote since can go.
+            for (String convId : oldIds) {
+                // the same procedure the owner's delete uses, limited to what is older than the cutoff
+                Map purged = org.moqui.impl.llm.LlmConversationPurge.purgeOlderThan(ec, convId, basisTimestamp)
+                callLogsRemoved += (purged.callLogs ?: 0L) as long
+                messagesRemoved += (purged.messages ?: 0L) as long
+                if (purged.conversationRemoved) conversationsRemoved++
             }
+            // a conversation that goes on keeps the run it continues from, so it can continue
+            def continuedFrom = ec.entity.find("moqui.llm.LlmConversation").condition("headRunId", EntityCondition.IN, oldTerminalRunIds ?: ["-"])
+                    .useCache(false).disableAuthz().list().collect { it.headRunId } as Set
+            oldTerminalRunIds = oldTerminalRunIds.findAll { !continuedFrom.contains(it) }
             messagesRemoved += ec.entity.find("moqui.llm.LlmMessage")
                     .condition("sentDate", EntityCondition.LESS_THAN, basisTimestamp)
                     .disableAuthz().deleteAll()
+            def oldStandaloneResponses = ec.entity.find("moqui.llm.LlmResponse")
+                    .condition("createdDate", EntityCondition.LESS_THAN, basisTimestamp)
+                    .disableAuthz().list().findAll { !it.runId || oldTerminalRunIds.contains(it.runId) }
+            def oldStandaloneResponseIds = oldStandaloneResponses.collect { it.llmResponseId }.findAll { it }
+            if (oldStandaloneResponseIds) {
+                def oldItems = ec.entity.find("moqui.llm.LlmItem")
+                        .condition("llmResponseId", EntityCondition.IN, oldStandaloneResponseIds)
+                        .disableAuthz().list()
+                def oldItemIds = oldItems.collect { it.llmItemId }.findAll { it }
+                if (oldItemIds) ec.entity.find("moqui.llm.LlmItem")
+                        .condition("sourceLlmItemId", EntityCondition.IN, oldItemIds)
+                        .disableAuthz().updateAll([sourceLlmItemId: null])
+                ec.entity.find("moqui.llm.LlmResponseEvent")
+                        .condition("llmResponseId", EntityCondition.IN, oldStandaloneResponseIds)
+                        .disableAuthz().deleteAll()
+                deleteContentProjection(oldItemIds)
+                    if (oldItemIds) ec.entity.find("moqui.llm.LlmContent")
+                        .condition("llmItemId", EntityCondition.IN, oldItemIds).disableAuthz().deleteAll()
+                ec.entity.find("moqui.llm.LlmItem")
+                        .condition("llmResponseId", EntityCondition.IN, oldStandaloneResponseIds)
+                        .disableAuthz().deleteAll()
+                ec.entity.find("moqui.llm.LlmResponse")
+                        .condition("llmResponseId", EntityCondition.IN, oldStandaloneResponseIds)
+                        .disableAuthz().deleteAll()
+            }
+            def oldStandaloneRequests = ec.entity.find("moqui.llm.LlmRequest")
+                    .condition("createdDate", EntityCondition.LESS_THAN, basisTimestamp)
+                    .disableAuthz().list().findAll { !it.runId || oldTerminalRunIds.contains(it.runId) }
+            def oldStandaloneRequestIds = oldStandaloneRequests.collect { it.llmRequestId }.findAll { it }
+            if (oldStandaloneRequestIds) {
+                def oldItems = ec.entity.find("moqui.llm.LlmItem")
+                        .condition("llmRequestId", EntityCondition.IN, oldStandaloneRequestIds)
+                        .disableAuthz().list()
+                def oldItemIds = oldItems.collect { it.llmItemId }.findAll { it }
+                deleteContentProjection(oldItemIds)
+                    if (oldItemIds) ec.entity.find("moqui.llm.LlmContent")
+                        .condition("llmItemId", EntityCondition.IN, oldItemIds).disableAuthz().deleteAll()
+                ec.entity.find("moqui.llm.LlmItem")
+                        .condition("llmRequestId", EntityCondition.IN, oldStandaloneRequestIds)
+                        .disableAuthz().deleteAll()
+                ec.entity.find("moqui.llm.LlmRequest")
+                        .condition("llmRequestId", EntityCondition.IN, oldStandaloneRequestIds)
+                        .disableAuthz().deleteAll()
+            }
+            if (oldTerminalRunIds) {
+                ec.entity.find("moqui.llm.LlmContextProjection")
+                        .condition("runId", EntityCondition.IN, oldTerminalRunIds).disableAuthz().deleteAll()
+                ec.entity.find("moqui.llm.LlmToolInvocation")
+                        .condition("runId", EntityCondition.IN, oldTerminalRunIds).disableAuthz().deleteAll()
+                ec.entity.find("moqui.llm.LlmRunStatus")
+                        .condition("runId", EntityCondition.IN, oldTerminalRunIds).disableAuthz().deleteAll()
+                runsRemoved += ec.entity.find("moqui.llm.LlmRun")
+                        .condition("runId", EntityCondition.IN, oldTerminalRunIds).disableAuthz().deleteAll()
+            }
             callLogsRemoved += ec.entity.find("moqui.llm.LlmCallLog")
                     .condition("startDate", EntityCondition.LESS_THAN, basisTimestamp)
                     .disableAuthz().deleteAll()
-            ec.logger.info("Removed ${callLogsRemoved} LlmCallLog, ${messagesRemoved} LlmMessage, ${conversationsRemoved} LlmConversation records more than ${daysToKeep} days old")
+            ec.logger.info("Removed ${callLogsRemoved} LlmCallLog, ${messagesRemoved} LlmMessage, ${conversationsRemoved} LlmConversation and ${runsRemoved} LlmRun records more than ${daysToKeep} days old")
         </script></actions>
+    </service>
+
+    <service verb="get" noun="LlmRequest" authenticate="true" allow-remote="false">
+        <description>Return an owned Open Responses request snapshot with ordered input items and content parts.</description>
+        <in-parameters><parameter name="llmRequestId" required="true"/></in-parameters>
+        <out-parameters><parameter name="request" type="Map"/></out-parameters>
+        <actions><script><![CDATA[
+            import org.moqui.entity.EntityCondition
+            def requestValue = ec.entity.find("moqui.llm.LlmRequest")
+                    .condition("llmRequestId", llmRequestId).disableAuthz().one()
+            if (!requestValue) return
+            boolean owner = (requestValue.ownerUserId && requestValue.ownerUserId == ec.user.userId) || ec.user.isInGroup("ADMIN")
+            if (!owner) {
+                ec.message.addError("Not authorized for LLM request ${requestValue.llmRequestId}")
+                return
+            }
+            List itemList = ec.entity.find("moqui.llm.LlmItem")
+                    .condition("llmRequestId", requestValue.llmRequestId)
+                    .orderBy("sequenceNum").disableAuthz().list()
+            def itemIds = itemList.collect { it.llmItemId }.findAll { it }
+            List contentList = itemIds ? ec.entity.find("moqui.llm.LlmContent")
+                    .condition("llmItemId", EntityCondition.IN, itemIds)
+                    .orderBy(["llmItemId", "contentKind", "sequenceNum"]).disableAuthz().list() : []
+            Map contentByItem = [:].withDefault { [content:[], summary:[], output:[]] }
+            contentList.each { part ->
+                String kind = part.contentKind in ["summary", "output"] ? part.contentKind : "content"
+                contentByItem[part.llmItemId][kind] << [
+                        contentType:part.contentType, purposeEnumId:part.purposeEnumId, text:part.textContent,
+                        refusal:part.refusal, imageUrl:org.moqui.impl.llm.LlmDataUpgrade.safeMedia(part.imageUrl), fileUrl:org.moqui.impl.llm.LlmDataUpgrade.safeMedia(part.fileUrl),
+                        videoUrl:org.moqui.impl.llm.LlmDataUpgrade.safeMedia(part.videoUrl),
+                        filename:part.filename, detail:part.detail, contentLocation:org.moqui.impl.llm.LlmDataUpgrade.safeMedia(part.contentLocation),
+                        mediaType:part.mediaType, contentLength:part.contentLength, contentSha256:part.contentSha256,
+                        annotationsJson:part.annotationsJson, logprobsJson:part.logprobsJson]
+            }
+            request = [
+                    llmRequestId:requestValue.llmRequestId, conversationId:requestValue.conversationId,
+                    runId:requestValue.runId, profileName:requestValue.profileName, model:requestValue.model,
+                    protocolName:requestValue.protocolName, operation:requestValue.operation,
+                    specVersion:requestValue.specVersion, schemaSha256:requestValue.schemaSha256,
+                    previousProviderResponseId:requestValue.previousProviderResponseId,
+                    inputShape:requestValue.inputShape, localStatusEnumId:requestValue.localStatusEnumId,
+                    httpStatus:requestValue.httpStatus, createdDate:requestValue.createdDate,
+                    sendStartedDate:requestValue.sendStartedDate, sendFinishedDate:requestValue.sendFinishedDate,
+                    items:(itemList.collect { item -> [
+                            llmItemId:item.llmItemId, sourceLlmItemId:item.sourceLlmItemId, sourceStatus:item.sourceStatus,
+                            sequenceNum:item.sequenceNum, providerItemId:item.providerItemId, itemType:item.itemType,
+                            status:item.status, role:item.role, phase:item.phase, providerCallId:item.providerCallId,
+                            toolName:item.toolName, argumentsJson:item.argumentsJson, outputJson:item.outputJson,
+                            outputShape:item.outputShape, createdBy:item.createdBy, referenceId:item.referenceId,
+                            content:contentByItem[item.llmItemId].content, summary:contentByItem[item.llmItemId].summary,
+                            outputContent:contentByItem[item.llmItemId].output] }),
+                    requestOptionsJson:requestValue.requestOptionsJson, effectiveOptionsJson:requestValue.effectiveOptionsJson,
+                    toolsJson:requestValue.toolsJson, requestPayloadJson:requestValue.requestPayloadJson,
+                    metadataJson:requestValue.metadataJson, errorJson:requestValue.errorJson
+            ]
+        ]]></script></actions>
+    </service>
+
+    <service verb="get" noun="LlmResponse" authenticate="true" allow-remote="false">
+        <description>Return an owned Open Responses snapshot with ordered output items, content parts and optional stream events.</description>
+        <in-parameters>
+            <parameter name="llmResponseId"/>
+            <parameter name="providerResponseId"/>
+            <parameter name="profileName"/>
+            <parameter name="includeEvents" type="Boolean" default="false"/>
+            <parameter name="eventOffset" type="Integer" default="0"/>
+            <parameter name="eventLimit" type="Integer" default="500"><description>At most 1000 per call.</description></parameter>
+            <parameter name="ownerUserId"><description>Only for an administrator; others always see their own.</description></parameter>
+        </in-parameters>
+        <out-parameters><parameter name="response" type="Map"/></out-parameters>
+        <actions><script><![CDATA[
+            import org.moqui.entity.EntityCondition
+            if (!llmResponseId && (!providerResponseId || !profileName)) {
+                ec.message.addError("llmResponseId or providerResponseId with profileName is required")
+                return
+            }
+            // a provider id is not unique across owners: a lookup by it is always scoped to one owner
+            String lookupOwner = ec.user.isInGroup("ADMIN") && ownerUserId ? ownerUserId : ec.user.userId
+            Map responseCondition = llmResponseId ? [llmResponseId:llmResponseId]
+                    : [providerResponseId:providerResponseId, profileName:profileName, ownerUserId:lookupOwner]
+            def responseValue = ec.entity.find("moqui.llm.LlmResponse")
+                    .condition(responseCondition).orderBy("-createdDate").limit(1).disableAuthz().list()[0]
+            if (!responseValue) return
+            def conv = responseValue.conversationId ? ec.entity.find("moqui.llm.LlmConversation")
+                    .condition("conversationId", responseValue.conversationId).disableAuthz().one() : null
+            String ownerUserId = responseValue.ownerUserId ?: conv?.userId
+            boolean owner = (ownerUserId && ownerUserId == ec.user.userId) || ec.user.isInGroup("ADMIN")
+            if (!owner) ec.message.addError("Not authorized for LLM response ${responseValue.llmResponseId}")
+            if (!owner) return
+            List itemList = ec.entity.find("moqui.llm.LlmItem")
+                    .condition("llmResponseId", responseValue.llmResponseId)
+                    .orderBy("sequenceNum").disableAuthz().list()
+            def itemIds = itemList.collect { it.llmItemId }.findAll { it }
+            List contentList = itemIds ? ec.entity.find("moqui.llm.LlmContent")
+                    .condition("llmItemId", EntityCondition.IN, itemIds)
+                    .orderBy(["llmItemId", "contentKind", "sequenceNum"]).disableAuthz().list() : []
+            Map contentByItem = [:].withDefault { [content:[], summary:[], output:[]] }
+            contentList.each { part ->
+                String kind = part.contentKind in ["summary", "output"] ? part.contentKind : "content"
+                contentByItem[part.llmItemId][kind] << [
+                        contentType:part.contentType, purposeEnumId:part.purposeEnumId, text:part.textContent, refusal:part.refusal,
+                        imageUrl:org.moqui.impl.llm.LlmDataUpgrade.safeMedia(part.imageUrl), fileUrl:org.moqui.impl.llm.LlmDataUpgrade.safeMedia(part.fileUrl),
+                        videoUrl:org.moqui.impl.llm.LlmDataUpgrade.safeMedia(part.videoUrl),
+                        filename:part.filename, detail:part.detail, contentLocation:org.moqui.impl.llm.LlmDataUpgrade.safeMedia(part.contentLocation),
+                        mediaType:part.mediaType, contentLength:part.contentLength, contentSha256:part.contentSha256,
+                        annotationsJson:part.annotationsJson, logprobsJson:part.logprobsJson]
+            }
+            response = [
+                    llmResponseId:responseValue.llmResponseId, providerResponseId:responseValue.providerResponseId,
+                    conversationId:responseValue.conversationId, runId:responseValue.runId, callId:responseValue.callId,
+                    profileName:responseValue.profileName, model:responseValue.model, specVersion:responseValue.specVersion,
+                    objectType:responseValue.objectType, status:responseValue.status,
+                    llmRequestId:responseValue.llmRequestId,
+                    previousProviderResponseId:responseValue.previousProviderResponseId,
+                    finishReason:responseValue.finishReason, httpStatus:responseValue.httpStatus,
+                    promptTokens:responseValue.promptTokens, completionTokens:responseValue.completionTokens,
+                    totalTokens:responseValue.totalTokens, cachedInputTokens:responseValue.cachedInputTokens,
+                    reasoningOutputTokens:responseValue.reasoningOutputTokens, createdDate:responseValue.createdDate,
+                    completedDate:responseValue.completedDate,
+                    optionsJson:responseValue.optionsJson, usageJson:responseValue.usageJson,
+                    errorJson:responseValue.errorJson, incompleteDetailsJson:responseValue.incompleteDetailsJson,
+                    metadataJson:responseValue.metadataJson, payloadJson:responseValue.payloadJson,
+                    items:(itemList.collect { item -> [
+                            llmItemId:item.llmItemId, sequenceNum:item.sequenceNum,
+                            providerItemId:item.providerItemId, itemType:item.itemType, status:item.status,
+                            role:item.role, phase:item.phase, providerCallId:item.providerCallId, toolName:item.toolName,
+                            argumentsJson:item.argumentsJson, outputJson:item.outputJson, createdBy:item.createdBy,
+                            referenceId:item.referenceId, content:contentByItem[item.llmItemId].content,
+                            summary:contentByItem[item.llmItemId].summary,
+                            outputContent:contentByItem[item.llmItemId].output] })
+            ]
+            int pageSize = (eventLimit != null ? eventLimit : 500) as int
+            int pageStart = (eventOffset != null ? eventOffset : 0) as int
+            if (pageSize < 1 || pageSize > 1000) { ec.message.addError("eventLimit must be between 1 and 1000"); return }
+            if (pageStart < 0) { ec.message.addError("eventOffset must not be negative"); return }
+            if (includeEvents) {
+                def eventPage = ec.entity.find("moqui.llm.LlmResponseEvent")
+                    .condition("llmResponseId", responseValue.llmResponseId)
+                    .orderBy("localSequenceNum").offset(pageStart).limit(pageSize + 1).disableAuthz().list()
+                if (eventPage.size() > pageSize) { response.eventsNext = pageStart + pageSize; eventPage = eventPage.subList(0, pageSize) }
+                response.events = eventPage.collect { evt -> [
+                            eventType:evt.eventType, sequenceNum:evt.sequenceNum,
+                            providerSequenceNum:evt.providerSequenceNum, localSequenceNum:evt.localSequenceNum,
+                            providerResponseId:evt.providerResponseId,
+                            providerItemId:evt.providerItemId, outputIndex:evt.outputIndex, contentIndex:evt.contentIndex,
+                            terminal:evt.terminal, eventDate:evt.eventDate, payloadJson:evt.payloadJson] }
+            }
+        ]]></script></actions>
+    </service>
+
+    <service verb="create" noun="LlmRun" authenticate="true" allow-remote="false" transaction="ignore">
+        <description>Create the durable execution record for one LLM agent turn.</description>
+        <in-parameters>
+            <parameter name="conversationId"/><parameter name="parentRunId"/><parameter name="profileName" required="true"/>
+            <parameter name="continuationModeEnumId"/><parameter name="objective"/><parameter name="context" type="List"/>
+            <parameter name="checkpoint" type="Map"/><parameter name="previousProviderResponseId"/>
+            <parameter name="maxIterations" type="Integer"/><parameter name="deadline" type="Timestamp"/>
+        </in-parameters>
+        <out-parameters><parameter name="run" type="Map"/></out-parameters>
+        <actions><script>run = org.moqui.impl.llm.LlmRunStore.createRun(ec, context)</script></actions>
+    </service>
+    <service verb="get" noun="LlmRun" authenticate="true" allow-remote="false">
+        <in-parameters><parameter name="runId" required="true"/></in-parameters>
+        <out-parameters><parameter name="run" type="Map"/></out-parameters>
+        <actions><script>run = org.moqui.impl.llm.LlmRunStore.getRun(ec, runId)</script></actions>
+    </service>
+    <service verb="find" noun="LlmRuns" authenticate="true" allow-remote="false">
+        <in-parameters><parameter name="conversationId"/><parameter name="statusId"/>
+            <parameter name="pageSize" type="Integer"/><parameter name="offset" type="Integer"/></in-parameters>
+        <out-parameters><parameter name="runs" type="List"/><parameter name="nextOffset" type="Integer"/></out-parameters>
+        <actions><script>
+            def result = org.moqui.impl.llm.LlmRunStore.listRuns(ec, context)
+            context.putAll(result)
+        </script></actions>
+    </service>
+    <service verb="update" noun="LlmRunStatus" authenticate="true" allow-remote="false" transaction="ignore">
+        <in-parameters><parameter name="runId" required="true"/><parameter name="statusId" required="true"/>
+            <parameter name="message"/></in-parameters>
+        <out-parameters><parameter name="run" type="Map"/></out-parameters>
+        <actions><script>run = org.moqui.impl.llm.LlmRunStore.transition(ec, runId, statusId, message)</script></actions>
+    </service>
+    <service verb="update" noun="LlmRunCheckpoint" authenticate="true" allow-remote="false" transaction="ignore">
+        <in-parameters><parameter name="runId" required="true"/><parameter name="fencingToken" type="Long" required="true"/>
+            <parameter name="contextItems" type="List"/><parameter name="checkpoint" type="Map"/>
+            <parameter name="previousProviderResponseId"/><parameter name="iteration" type="Integer"/></in-parameters>
+        <out-parameters><parameter name="run" type="Map"/></out-parameters>
+        <actions><script>run = org.moqui.impl.llm.LlmRunStore.checkpoint(ec, runId, fencingToken,
+                contextItems, checkpoint, previousProviderResponseId, iteration)</script></actions>
+    </service>
+    <service verb="cancel" noun="LlmRun" authenticate="true" allow-remote="false" transaction="ignore">
+        <in-parameters><parameter name="runId" required="true"/></in-parameters>
+        <out-parameters><parameter name="run" type="Map"/></out-parameters>
+        <actions><script>run = org.moqui.impl.llm.LlmRunStore.cancel(ec, runId)</script></actions>
+    </service>
+    <service verb="claim" noun="RecoverableLlmRuns" authenticate="true" allow-remote="false" transaction="ignore">
+        <in-parameters><parameter name="workerId" required="true"/><parameter name="leaseSeconds" type="Integer" default="60"/>
+            <parameter name="limit" type="Integer" default="10"/></in-parameters>
+        <out-parameters><parameter name="runs" type="List"/></out-parameters>
+        <actions><script>runs = org.moqui.impl.llm.LlmRunStore.claimRecoverable(ec, workerId, leaseSeconds, limit)</script></actions>
+    </service>
+    <service verb="renew" noun="LlmRunLease" authenticate="true" allow-remote="false" transaction="ignore">
+        <in-parameters><parameter name="runId" required="true"/><parameter name="workerId" required="true"/>
+            <parameter name="fencingToken" type="Long" required="true"/><parameter name="leaseSeconds" type="Integer" default="60"/></in-parameters>
+        <out-parameters><parameter name="run" type="Map"/></out-parameters>
+        <actions><script>run = org.moqui.impl.llm.LlmRunStore.renewLease(ec, runId, workerId, fencingToken, leaseSeconds)</script></actions>
+    </service>
+    <service verb="recover" noun="LlmRuns" authenticate="true" allow-remote="false" transaction="ignore">
+        <description>Claim expired runs owned by the current user and resume only checkpoints safe from duplicate effects.</description>
+        <in-parameters><parameter name="workerId" required="true"/><parameter name="leaseSeconds" type="Integer" default="60"/>
+            <parameter name="limit" type="Integer" default="10"/></in-parameters>
+        <out-parameters><parameter name="claimed" type="Integer"/><parameter name="recovered" type="List"/>
+            <parameter name="waitingConfirmation" type="List"/><parameter name="failed" type="List"/></out-parameters>
+        <actions><script>context.putAll(org.moqui.impl.llm.LlmRecoveryWorker.recover(ec, workerId, leaseSeconds, limit))</script></actions>
+    </service>
+    <service verb="recover" noun="AllLlmRuns" authenticate="false" allow-remote="false" transaction="ignore">
+        <description>Periodic local worker that resumes expired runs under each persisted owner identity.</description>
+        <in-parameters><parameter name="workerId" default="scheduled-recovery"/><parameter name="leaseSeconds" type="Integer" default="60"/>
+            <parameter name="limit" type="Integer" default="50"/></in-parameters>
+        <out-parameters><parameter name="owners" type="List"/><parameter name="ownerCount" type="Integer"/></out-parameters>
+        <actions><script>context.putAll(org.moqui.impl.llm.LlmRecoveryWorker.recoverAll(ec, workerId, leaseSeconds, limit))</script></actions>
+    </service>
+    <service verb="create" noun="LlmToolInvocation" authenticate="true" allow-remote="false" transaction="ignore">
+        <in-parameters><parameter name="runId" required="true"/><parameter name="llmResponseId"/>
+            <parameter name="providerItemId"/><parameter name="providerCallId" required="true"/>
+            <parameter name="toolName" required="true"/><parameter name="idempotencyKey"/>
+            <parameter name="arguments" type="Map"/></in-parameters>
+        <out-parameters><parameter name="invocation" type="Map"/></out-parameters>
+        <actions><script>invocation = org.moqui.impl.llm.LlmRunStore.planTool(ec, runId, context)</script></actions>
+    </service>
+    <service verb="claim" noun="LlmToolInvocation" authenticate="true" allow-remote="false" transaction="ignore">
+        <in-parameters><parameter name="toolInvocationId" required="true"/><parameter name="workerId" required="true"/>
+            <parameter name="fencingToken" type="Long" required="true"/></in-parameters>
+        <out-parameters><parameter name="invocation" type="Map"/></out-parameters>
+        <actions><script>invocation = org.moqui.impl.llm.LlmRunStore.claimTool(ec, toolInvocationId, workerId, fencingToken)</script></actions>
+    </service>
+    <service verb="complete" noun="LlmToolInvocation" authenticate="true" allow-remote="false" transaction="ignore">
+        <in-parameters><parameter name="toolInvocationId" required="true"/><parameter name="fencingToken" type="Long" required="true"/>
+            <parameter name="toolResult"/><parameter name="success" type="Boolean" default="true"/>
+            <parameter name="contextItems" type="List"/><parameter name="checkpoint" type="Map"/></in-parameters>
+        <out-parameters><parameter name="invocation" type="Map"/><parameter name="run" type="Map"/></out-parameters>
+        <actions><script>
+            def result = org.moqui.impl.llm.LlmRunStore.completeToolAndCheckpoint(ec, toolInvocationId,
+                    fencingToken, toolResult, success, contextItems, checkpoint)
+            context.putAll(result)
+        </script></actions>
+    </service>
+    <service verb="mark" noun="LlmToolInvocationUncertain" authenticate="true" allow-remote="false" transaction="ignore">
+        <in-parameters><parameter name="toolInvocationId" required="true"/><parameter name="message"/></in-parameters>
+        <out-parameters><parameter name="invocation" type="Map"/></out-parameters>
+        <actions><script>invocation = org.moqui.impl.llm.LlmRunStore.markToolUncertain(ec, toolInvocationId, message)</script></actions>
+    </service>
+    <service verb="index" noun="LlmContext" authenticate="true" allow-remote="false" transaction="ignore">
+        <in-parameters><parameter name="conversationId"/><parameter name="runId"/><parameter name="llmResponseId"/>
+            <parameter name="sourceType" required="true"/><parameter name="sourceId" required="true"/>
+            <parameter name="textContent" required="true"/></in-parameters>
+        <actions><script>org.moqui.impl.llm.LlmRunStore.projectText(ec, context)</script></actions>
+    </service>
+    <service verb="upgrade" noun="LlmOpenResponsesData" authenticate="true" allow-remote="false" transaction="ignore">
+        <description>For an installation that already holds Open Responses data from before the options and usage were kept
+            apart: bring stored responses to the current layout, a batch at a time (administrator only). Run it again
+            with lastLlmResponseId of the previous result while more is true; it is safe to repeat and to interrupt.
+            Back up first; see framework/plans/OpenResponses.md.</description>
+        <in-parameters><parameter name="afterLlmResponseId"/><parameter name="batchSize" type="Integer" default="200"/></in-parameters>
+        <out-parameters><parameter name="upgraded" type="Long"/><parameter name="movedToRequest" type="Long"/>
+            <parameter name="lastLlmResponseId"/><parameter name="more" type="Boolean"/></out-parameters>
+        <actions><script>context.putAll(org.moqui.impl.llm.LlmRunStore.upgradeOpenResponsesData(ec, afterLlmResponseId, batchSize as int))</script></actions>
+    </service>
+    <service verb="poll" noun="LlmBackgroundResponses" authenticate="true" allow-remote="false" transaction="ignore">
+        <description>Look at the runs of the current user that wait for the provider to finish a background response, and
+            complete the ones that are due and finished. Needs a provider that can read a response; one that cannot is left
+            as it is. It never creates a response.</description>
+        <in-parameters><parameter name="workerId" default="poller"/><parameter name="leaseSeconds" type="Integer" default="60"/>
+            <parameter name="limit" type="Integer" default="50"/></in-parameters>
+        <out-parameters><parameter name="polled" type="Long"/><parameter name="outcomes" type="List"/></out-parameters>
+        <actions><script>context.putAll(org.moqui.impl.llm.LlmBackgroundPoller.poll(ec, workerId, leaseSeconds as int, limit as int))</script></actions>
+    </service>
+    <service verb="poll" noun="AllLlmBackgroundResponses" authenticate="false" allow-remote="false" transaction="ignore">
+        <description>Scheduled: poll the waiting background responses of every owner, each as that owner.</description>
+        <in-parameters><parameter name="workerId" default="poller"/><parameter name="leaseSeconds" type="Integer" default="60"/>
+            <parameter name="limit" type="Integer" default="50"/></in-parameters>
+        <out-parameters><parameter name="owners" type="List"/><parameter name="ownerCount" type="Long"/></out-parameters>
+        <actions><script>context.putAll(org.moqui.impl.llm.LlmBackgroundPoller.pollAll(ec, workerId, leaseSeconds as int, limit as int))</script></actions>
+    </service>
+    <service verb="protect" noun="LlmContentMedia" authenticate="true" allow-remote="false" transaction="ignore">
+        <description>For an installation that stored Open Responses content before the media columns were encrypted: write
+            the image, file and video locations of stored content as ciphertext, a batch at a time (administrator only). Run it
+            again with lastLlmContentId of the previous result while more is true; it is safe to repeat and to interrupt.
+            Back up first; see framework/plans/OpenResponses.md.</description>
+        <in-parameters><parameter name="afterLlmContentId"/><parameter name="batchSize" type="Integer" default="200"/></in-parameters>
+        <out-parameters><parameter name="converted" type="Long"/><parameter name="alreadyProtected" type="Long"/><parameter name="rows" type="Long"/>
+            <parameter name="lastLlmContentId"/><parameter name="more" type="Boolean"/></out-parameters>
+        <actions><script>context.putAll(org.moqui.impl.llm.LlmDataUpgrade.protectContentMedia(ec, afterLlmContentId, batchSize as int))</script></actions>
+    </service>
+    <service verb="protect" noun="LlmResponseDiagnostics" authenticate="true" allow-remote="false" transaction="ignore">
+        <description>For an installation that stored Open Responses responses before the error, metadata and incomplete-details
+            columns were encrypted: write them as ciphertext, a batch at a time (administrator only). Run it again with
+            lastLlmResponseId of the previous result while more is true; it is safe to repeat and to interrupt. Back up first.</description>
+        <in-parameters><parameter name="afterLlmResponseId"/><parameter name="batchSize" type="Integer" default="200"/></in-parameters>
+        <out-parameters><parameter name="converted" type="Long"/><parameter name="alreadyProtected" type="Long"/><parameter name="rows" type="Long"/>
+            <parameter name="lastLlmResponseId"/><parameter name="more" type="Boolean"/></out-parameters>
+        <actions><script>context.putAll(org.moqui.impl.llm.LlmDataUpgrade.protectResponseDiagnostics(ec, afterLlmResponseId, batchSize as int))</script></actions>
+    </service>
+    <service verb="migrate" noun="LlmConversationModel" authenticate="true" allow-remote="false" transaction="ignore">
+        <description>Move conversations of an Open Responses profile that were stored as a transcript of messages to the item
+            model, a batch at a time (administrator only). The trajectory comes from the latest completed run of the
+            conversation; old message rows are deleted only when they are a copy of it, and are otherwise kept and never read
+            again. A conversation without a completed run is reported in withoutSource and left as it is. Run it again with
+            lastConversationId of the previous result while more is true. Back up first; see framework/plans/OpenResponses.md.</description>
+        <in-parameters><parameter name="afterConversationId"/><parameter name="batchSize" type="Integer" default="100"/></in-parameters>
+        <out-parameters><parameter name="migrated" type="List"/><parameter name="keptMessageRows" type="List"/><parameter name="withoutSource" type="List"/>
+            <parameter name="withoutProfile" type="List"/><parameter name="skippedMessageProtocol" type="Long"/>
+            <parameter name="lastConversationId"/><parameter name="more" type="Boolean"/></out-parameters>
+        <actions><script>context.putAll(org.moqui.impl.llm.LlmDataUpgrade.migrateConversationModel(ec, afterConversationId, batchSize as int))</script></actions>
+    </service>
+    <service verb="backfill" noun="LlmContextProjection" authenticate="true" allow-remote="false" transaction="ignore">
+        <description>Project the caller's stored content that has no searchable copy yet, a batch at a time. Run it again
+            with lastLlmContentId of the previous result while more is true; it can be repeated safely.</description>
+        <in-parameters><parameter name="afterLlmContentId"/><parameter name="batchSize" type="Integer" default="200"/></in-parameters>
+        <out-parameters><parameter name="written" type="Long"/><parameter name="lastLlmContentId"/><parameter name="more" type="Boolean"/></out-parameters>
+        <actions><script>context.putAll(org.moqui.impl.llm.LlmRunStore.backfillContentProjection(ec, afterLlmContentId, batchSize as int))</script></actions>
+    </service>
+    <service verb="search" noun="LlmContext" authenticate="true" allow-remote="false">
+        <in-parameters><parameter name="query" required="true"/><parameter name="conversationId"/>
+            <parameter name="runId"/><parameter name="profileName"/><parameter name="limit" type="Integer"/></in-parameters>
+        <out-parameters><parameter name="results" type="List"/></out-parameters>
+        <actions><script>context.putAll(org.moqui.impl.llm.LlmRunStore.searchContext(ec, context))</script></actions>
+    </service>
+
+    <service verb="retrieve" noun="ProviderLlmResponse" authenticate="true" allow-remote="false" transaction="ignore">
+        <description>Retrieve an owned provider response when the configured provider advertises the extension.</description>
+        <in-parameters><parameter name="profileName" required="true"/><parameter name="responseId" required="true"/></in-parameters>
+        <out-parameters><parameter name="response" type="Map"/></out-parameters>
+        <actions><script>response = org.moqui.impl.llm.LlmResponsesOperations.retrieve(ec, profileName, responseId)</script></actions>
+    </service>
+    <service verb="cancel" noun="ProviderLlmResponse" authenticate="true" allow-remote="false" transaction="ignore">
+        <description>Cancel an owned provider response when the configured provider advertises the extension.</description>
+        <in-parameters><parameter name="profileName" required="true"/><parameter name="responseId" required="true"/></in-parameters>
+        <out-parameters><parameter name="response" type="Map"/></out-parameters>
+        <actions><script>response = org.moqui.impl.llm.LlmResponsesOperations.cancel(ec, profileName, responseId)</script></actions>
+    </service>
+    <service verb="get" noun="ProviderLlmResponseInputItems" authenticate="true" allow-remote="false" transaction="ignore">
+        <description>List input items for an owned provider response when supported.</description>
+        <in-parameters><parameter name="profileName" required="true"/><parameter name="responseId" required="true"/>
+            <parameter name="limit" type="Integer"><description>1 to 100</description></parameter>
+            <parameter name="order"><description>asc or desc</description></parameter>
+            <parameter name="after"><description>The id of the item the page continues from, as the provider gave it in last_id</description></parameter></in-parameters>
+        <out-parameters><parameter name="result" type="Map"/></out-parameters>
+        <actions><script>result = org.moqui.impl.llm.LlmResponsesOperations.inputItems(ec, profileName, responseId, [limit: limit, order: order, after: after])</script></actions>
+    </service>
+    <service verb="count" noun="ProviderLlmResponseInputTokens" authenticate="true" allow-remote="false" transaction="ignore">
+        <description>Count tokens for canonical input items when supported by the provider.</description>
+        <in-parameters><parameter name="profileName" required="true"/><parameter name="inputItems" type="List" required="true"/>
+            <parameter name="options" type="org.moqui.llm.LlmResponseOptions"/></in-parameters>
+        <out-parameters><parameter name="result" type="Map"/></out-parameters>
+        <actions><script>result = org.moqui.impl.llm.LlmResponsesOperations.inputTokens(ec, profileName, inputItems, options)</script></actions>
+    </service>
+    <service verb="compact" noun="LlmResponseContext" authenticate="true" allow-remote="false" transaction="ignore">
+        <description>Compact canonical Open Responses input items using the configured standard protocol.</description>
+        <in-parameters><parameter name="profileName" required="true"/><parameter name="inputItems" type="List"/>
+            <parameter name="options" type="org.moqui.llm.LlmResponseOptions"/></in-parameters>
+        <out-parameters><parameter name="result" type="Map"/></out-parameters>
+        <actions><script>result = org.moqui.impl.llm.LlmResponsesOperations.compact(ec, profileName, inputItems, options)</script></actions>
     </service>
 
     <!-- Sync wrappers for Service REST (/rest/s1/moqui/llm/...). Do not SSE through these. -->

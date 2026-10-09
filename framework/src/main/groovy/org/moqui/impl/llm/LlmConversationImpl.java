@@ -21,7 +21,12 @@ import org.moqui.entity.EntityValue;
 import org.moqui.llm.LlmConversation;
 import org.moqui.llm.LlmException;
 import org.moqui.llm.LlmFinishReason;
+import org.moqui.llm.LlmContentPart;
+import org.moqui.llm.LlmItem;
 import org.moqui.llm.LlmMessage;
+import org.moqui.llm.OpenResponsesSpec;
+import org.moqui.llm.LlmResponseEvent;
+import org.moqui.llm.LlmProtocol.ProtocolRequest;
 import org.moqui.llm.LlmProtocol.ProtocolResult;
 import org.moqui.llm.LlmToolCall;
 import org.moqui.llm.LlmUsage;
@@ -77,10 +82,42 @@ public class LlmConversationImpl implements LlmConversation {
     /** Token from {@link LlmFacadeImpl#claimTurn}. Zero means this instance does not hold the claim. */
     private long turnToken = 0L;
     private final List<LlmMessage> messages = new ArrayList<>();
+    /** MODEL_MESSAGES (null in old rows): the transcript is the LlmMessage rows. MODEL_ITEMS: structured items of the runs. */
+    private String messageModel;
+    private boolean itemModel;
+    /** The completed run that holds the trajectory this conversation continues from, and how many times it moved. */
+    private String headRunId;
+    private Long headVersion;
+
+    static final String MODEL_MESSAGES = "MESSAGES";
+    static final String MODEL_ITEMS = "ITEMS";
+    /** Moved to the item model by the upgrade; the old message rows were a copy of the trajectory and are gone. */
+    static final String MODEL_ITEMS_MIGRATED = "ITEMS_MIGRATED";
+    /** Moved to the item model by the upgrade; the old message rows were not a copy and are kept, never read again. */
+    static final String MODEL_ITEMS_LEGACY = "ITEMS_LEGACY";
+    static boolean isItemModel(String model) {
+        return MODEL_ITEMS.equals(model) || MODEL_ITEMS_MIGRATED.equals(model) || MODEL_ITEMS_LEGACY.equals(model);
+    }
+    /** Runs of a conversation that was moved were built from a window of messages: instructions and context are in their items. */
+    static boolean hasWindowContextInItems(String model) { return MODEL_ITEMS_MIGRATED.equals(model) || MODEL_ITEMS_LEGACY.equals(model); }
+    static final String CONTEXT_WRAPPER = "<untrusted-context ";
 
     LlmConversationImpl(ExecutionContext ec, String conversationId) {
         this.ec = ec;
         this.conversationId = conversationId;
+    }
+
+    /**
+     * A writer with no conversation: it carries the authenticated user so requests, responses and call logs of a
+     * background run can be persisted with a null conversationId. It is never used as a client conversation.
+     */
+    static LlmConversationImpl detached(ExecutionContext ec) {
+        LlmConversationImpl writer = new LlmConversationImpl(ec, null);
+        if (ec != null && ec.getUser() != null) {
+            writer.userId = ec.getUser().getUserId();
+            writer.visitId = ec.getUser().getVisitId();
+        }
+        return writer;
     }
 
     /** In-memory conversation for tests and callers without EntityFacade. */
@@ -205,6 +242,158 @@ public class LlmConversationImpl implements LlmConversation {
         return Thread.currentThread().isInterrupted();
     }
 
+
+    // ---- the conversation model: messages (Chat Completions) or structured items (Open Responses)
+
+    /** True when the trajectory is the structured items of the runs and no LlmMessage row is read or written. */
+    boolean usesItemModel() { return itemModel; }
+    String getHeadRunId() { return headRunId; }
+    long getHeadVersion() { return headVersion != null ? headVersion : 0L; }
+
+    /**
+     * Fixes the model of a conversation from the protocol of the profile that uses it, and refuses a profile of the other
+     * model afterwards: a conversation is never converted from one protocol to the other by using it.
+     */
+    void bindProfile(LlmFacadeImpl.ProfileState profile) {
+        if (profile == null || profile.protocol == null) return;
+        boolean wantItems = profile.protocol.getCapabilities().contains(org.moqui.llm.LlmProtocol.Capability.ITEM_TRAJECTORY);
+        // a conversation of the item model is bound to its profile; a transcript of messages is not, as it never was
+        if ((itemModel || wantItems) && profileName != null && profile.name != null && !profileName.equals(profile.name))
+            throw new LlmException("Conversation " + conversationId + " belongs to profile " + profileName + ", not " + profile.name,
+                    null, LlmFinishReason.ERROR, 409, profile.name, conversationId);
+        if (messageModel == null) {
+            boolean empty = messages.stream().noneMatch(m -> m.role == LlmMessage.Role.USER || m.role == LlmMessage.Role.ASSISTANT);
+            if (!empty && wantItems)
+                throw new LlmException("Conversation " + conversationId + " already has a message transcript; it cannot continue with an item protocol",
+                        null, LlmFinishReason.ERROR, 409, profileName, conversationId);
+            messageModel = wantItems ? MODEL_ITEMS : MODEL_MESSAGES;
+            itemModel = wantItems;
+            if (hasEntity(ec) && conversationId != null) persistIsolated(() -> updateHeader());
+        } else if (itemModel != wantItems) {
+            throw new LlmException("Conversation " + conversationId + " uses the " + (itemModel ? "item" : "message")
+                    + " model; profile " + profile.name + " uses the other one",
+                    null, LlmFinishReason.ERROR, 409, profile.name, conversationId);
+        }
+    }
+
+    /** The run whose context is the trajectory of this conversation, owner, profile and conversation checked; null when none. */
+    Map<String, Object> headRun() {
+        if (!itemModel || headRunId == null || !hasEntity(ec)) return null;
+        Map<String, Object> run = LlmRunStore.getRun(ec, headRunId);
+        if (run == null) return null;
+        boolean same = conversationId != null && conversationId.equals(String.valueOf(run.get("conversationId")))
+                && userId != null && userId.equals(String.valueOf(run.get("userId")))
+                && (profileName == null || profileName.equals(String.valueOf(run.get("profileName"))));
+        if (!same) throw new LlmException("The head of conversation " + conversationId + " is not one of its own runs",
+                null, LlmFinishReason.ERROR, 409, profileName, conversationId);
+        return run;
+    }
+
+    /** The structured trajectory this conversation continues from: the items of its head run without the context of that turn. */
+    List<LlmItem> headItems() {
+        Map<String, Object> run = headRun();
+        return run == null ? new ArrayList<>() : trajectoryOf(run);
+    }
+
+    /** The items of a run that are history: not the context of that turn, and not what an older run took from a message window. */
+    private List<LlmItem> trajectoryOf(Map<String, Object> run) {
+        List<LlmItem> out = new ArrayList<>();
+        boolean fromWindow = hasWindowContextInItems(messageModel);
+        for (LlmItem item : OpenResponsesCodec.itemsFromStored(run.get("context")))
+            if (item != null && !Boolean.TRUE.equals(item.ephemeral) && !(fromWindow && isWindowLeftover(item))) out.add(item);
+        return dropUnansweredCalls(out);
+    }
+
+    /**
+     * A function call that no output answers (the response ended before the call was finished, or a turn stopped on its
+     * length) cannot be replayed: the provider refuses a call without its output. It goes, together with the reasoning
+     * items written right before it, which the provider refuses without the item they lead to.
+     */
+    static List<LlmItem> dropUnansweredCalls(List<LlmItem> items) {
+        java.util.Set<String> answered = new java.util.HashSet<>();
+        for (LlmItem item : items) if ("function_call_output".equals(item.type) && item.callId != null) answered.add(item.callId);
+        List<LlmItem> out = new ArrayList<>();
+        List<LlmItem> pendingReasoning = new ArrayList<>();
+        for (LlmItem item : items) {
+            if ("reasoning".equals(item.type)) { pendingReasoning.add(item); continue; }
+            boolean unanswered = "function_call".equals(item.type) && (item.callId == null || !answered.contains(item.callId));
+            if (!unanswered) out.addAll(pendingReasoning);
+            pendingReasoning.clear();
+            if (!unanswered) out.add(item);
+        }
+        // reasoning at the very end led to nothing the provider can be shown
+        return out;
+    }
+
+    /** A system message or the wrapped application context that an older run took from the message window into its items. */
+    static boolean isWindowLeftover(LlmItem item) {
+        if (item == null || !"message".equals(item.type)) return false;
+        if ("system".equals(item.role) || "developer".equals(item.role)) return true;
+        if (!"user".equals(item.role) || item.content == null || item.content.isEmpty()) return false;
+        org.moqui.llm.LlmContentPart first = item.content.get(0);
+        return first != null && first.text != null && first.text.startsWith(CONTEXT_WRAPPER);
+    }
+
+    /** Items a viewer sees: the run in progress or waiting when there is one, else the head. */
+    /** The attachment with this index among those the history shows, with its decoded content; null when there is none. */
+    public Object[] attachmentAt(int index) {
+        org.moqui.llm.LlmContentPart part = ItemHistory.attachmentAt(trajectoryForView(), index);
+        if (part == null) return null;
+        ItemHistory.Bytes bytes = ItemHistory.bytesOf(part);
+        if (bytes == null) return null;
+        String mediaType = part.mediaType != null ? part.mediaType : bytes.mediaType;
+        return new Object[] {bytes.data, mediaType, part.filename};
+    }
+
+    private List<LlmItem> trajectoryForView() {
+        try {
+            Object active = attributes.get("activeLlmRunId");
+            if (active != null && hasEntity(ec)) {
+                Map<String, Object> run = LlmRunStore.getRun(ec, active.toString());
+                if (run != null && conversationId != null && conversationId.equals(String.valueOf(run.get("conversationId"))))
+                    return trajectoryOf(run);
+            }
+            return headItems();
+        } catch (LlmException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            logger.warn("Could not read the trajectory of conversation " + conversationId + ": " + e.getMessage());
+            return new ArrayList<>();
+        }
+    }
+
+    /**
+     * Makes the completed run the head, if the head is still the one this turn started from. Another turn that moved it
+     * first (a second client, a recovery) makes this one fail instead of dropping the other turn's items.
+     */
+    void advanceHead(String runId, long expectedVersion) {
+        if (!itemModel || !hasEntity(ec) || conversationId == null) return;
+        persistIsolated(() -> {
+            EntityValue ev = ec.getEntity().find("moqui.llm.LlmConversation").condition("conversationId", conversationId)
+                    .forUpdate(true).useCache(false).one();
+            if (ev == null) throw new LlmException("Conversation not found: " + conversationId);
+            long current = ev.getLong("headVersion") != null ? ev.getLong("headVersion") : 0L;
+            if (current != expectedVersion)
+                throw new LlmException("Conversation " + conversationId + " moved on while this turn ran (head version "
+                        + current + ", expected " + expectedVersion + ")", null, LlmFinishReason.ERROR, 409, profileName, conversationId);
+            ev.set("headRunId", runId);
+            ev.set("headVersion", current + 1);
+            ev.update();
+            headRunId = runId;
+            headVersion = current + 1;
+        });
+    }
+
+    /** The instructions of this conversation: the current system text, which is not part of the trajectory. */
+    String instructions() { return systemText; }
+
+    /** Application context of this turn (session facts, pins, skills); it is rebuilt for every turn, never stored as history. */
+    List<LlmMessage> contextMessages() {
+        List<LlmMessage> out = new ArrayList<>();
+        for (LlmMessage m : messages) if (m != null && m.role == LlmMessage.Role.CONTEXT) out.add(m.copy());
+        return out;
+    }
+
     @Override public String getConversationId() { return conversationId; }
     @Override public String getProfileName() { return profileName; }
     @Override public String getUserId() { return userId; }
@@ -281,20 +470,20 @@ public class LlmConversationImpl implements LlmConversation {
         }
     }
 
+    /** Removes the conversation and everything of it through the one procedure the retention also uses; 409 while a turn or run is working. */
     void deleteStored() {
-        persistIsolated(() -> {
-            if (!hasEntity(ec) || conversationId == null) return;
-            String id = conversationId;
-            ec.getEntity().find("moqui.llm.LlmSkillUse").condition("conversationId", id).deleteAll();
-            ec.getEntity().find("moqui.llm.LlmCallLog").condition("conversationId", id).deleteAll();
-            ec.getEntity().find("moqui.llm.LlmMessage").condition("conversationId", id).deleteAll();
-            EntityValue ev = ec.getEntity().find("moqui.llm.LlmConversation")
-                    .condition("conversationId", id).one();
-            if (ev != null) ev.delete();
-            messages.clear();
-            pendingToolCalls.clear();
-            statusId = null;
-        });
+        if (!hasEntity(ec) || conversationId == null) return;
+        // the owner (or an administrator) was checked when the conversation was loaded; what belongs to it is removed as the
+        // framework's own bookkeeping, as every other write of this class is, not as an entity delete of the person
+        boolean was = ec.getArtifactExecution().disableAuthz();
+        try {
+            LlmConversationPurge.deleteAll(ec, conversationId);
+        } finally {
+            if (!was) ec.getArtifactExecution().enableAuthz();
+        }
+        messages.clear();
+        pendingToolCalls.clear();
+        statusId = null;
     }
 
     @Override
@@ -328,7 +517,8 @@ public class LlmConversationImpl implements LlmConversation {
                 rest.add(m);
             }
         }
-        rest = trimRest(rest, policy, charsOf(system) + charsOfAll(context));
+        // a window policy shortens a transcript of messages; the trajectory of the item model is replayed whole, so it is not applied
+        if (!itemModel) rest = trimRest(rest, policy, charsOf(system) + charsOfAll(context));
         List<LlmMessage> window = new ArrayList<>();
         if (policy.keepSystemFirst && system != null) window.add(system);
         window.addAll(context);
@@ -471,6 +661,12 @@ public class LlmConversationImpl implements LlmConversation {
             updateHeader();
         });
         abortInFlight();
+        closeConnections();
+    }
+
+    private void closeConnections() {
+        if (ec != null && ec.getLlm() instanceof LlmFacadeImpl && conversationId != null)
+            ((LlmFacadeImpl) ec.getLlm()).closeSessionsOfScope("conv:" + conversationId);
     }
 
     private void abortInFlight() {
@@ -650,11 +846,12 @@ public class LlmConversationImpl implements LlmConversation {
         updateHeader();
     }
 
-    void writeCallLog(String profileName, String protocolName, String model, boolean logContent,
+    String writeCallLog(String profileName, String protocolName, String model, boolean logContent,
             List<LlmMessage> window, ProtocolResult result, long durationMs, int iteration, boolean wasError) {
-        if (!hasEntity(ec)) return;
+        if (!hasEntity(ec)) return null;
         EntityValue ev = ec.getEntity().makeValue("moqui.llm.LlmCallLog");
         ev.setSequencedIdPrimary();
+        String callId = ev.getString("callId");
         ev.set("conversationId", conversationId);
         ev.set("profileName", profileName);
         ev.set("model", model);
@@ -693,6 +890,410 @@ public class LlmConversationImpl implements LlmConversation {
             ev.set("requestJson", LlmJson.toJson(req));
         }
         ev.create();
+        if (result != null) result.localResponseId = writeOpenResponsesResource(callId, profileName, model,
+                protocolName, result, logContent);
+        return callId;
+    }
+
+    String writeOpenResponsesRequest(String profileName, String protocolName, String model, ProtocolRequest request,
+            Map<String, Object> requestBody, String bodyJson) {
+        if (!hasEntity(ec) || request == null || requestBody == null) return null;
+        LlmRunStore.assertFence(ec, request.runId, request.runFence);
+        EntityValue rv = ec.getEntity().makeValue("moqui.llm.LlmRequest");
+        rv.setSequencedIdPrimary();
+        String llmRequestId = rv.getString("llmRequestId");
+        rv.set("conversationId", conversationId);
+        rv.set("runId", request.runId);
+        rv.set("ownerUserId", userId);
+        rv.set("profileName", profileName);
+        rv.set("model", model);
+        rv.set("protocolName", protocolName);
+        rv.set("transportEnumId", transportEnumId(request.transport, protocolName));
+        rv.set("operation", request.operation != null ? request.operation : "create_response");
+        rv.set("specVersion", request.specVersion);
+        rv.set("schemaSha256", OpenResponsesSpec.OPENAPI_SHA256);
+        rv.set("previousProviderResponseId", request.previousResponseId);
+        rv.set("inputShape", inputShape(requestBody));
+        rv.set("localStatusEnumId", "LlmReqSending");
+        // the complete body as sent (encrypted column): opaque and large fields included, so the record is exact
+        rv.set("requestPayloadJson", bodyJson);
+        Map<String, Object> sentMeta = new LinkedHashMap<>();
+        sentMeta.put("sentBodySha256", sha256Hex(bodyJson));
+        sentMeta.put("sentBodyBytes", bodyJson.getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
+        rv.set("metadataJson", LlmJson.toJson(sentMeta));
+        rv.set("requestOptionsJson", request.responseOptions != null ? LlmJson.toExactJson(request.responseOptions.asMap()) : null);
+        rv.set("effectiveOptionsJson", LlmJson.toExactJson(OpenResponsesCodec.effectiveRequestOptions(requestBody).asMap()));
+        rv.set("toolsJson", request.tools != null ? LlmJson.toJson(requestBody.get("tools")) : null);
+        Timestamp now = now(ec);
+        rv.set("createdDate", now);
+        rv.set("sendStartedDate", now);
+        rv.create();
+        List<LlmItem> items = request.inputItems != null ? request.inputItems : OpenResponsesCodec.requestItems(request);
+        writeItems(llmRequestId, null, items, 1, profileName, request.runId);
+        request.localRequestId = llmRequestId;
+        return llmRequestId;
+    }
+
+    /**
+     * Writes the response row while the stream is still open (status in_progress) and appends events to it, so a crash
+     * in the middle of a stream leaves the events received so far. The final result completes the same row.
+     */
+    void appendStreamEvents(ProtocolRequest request, String profileName, String protocolName, String model,
+            List<LlmResponseEvent> batch) {
+        if (!hasEntity(ec) || request == null || batch == null || batch.isEmpty()) return;
+        LlmRunStore.assertFence(ec, request.runId, request.runFence);
+        String providerResponseId = null;
+        for (LlmResponseEvent event : batch) {
+            if (event.responseId != null) providerResponseId = event.responseId;
+            else if (event.payload != null && event.payload.get("response") instanceof Map)
+                providerResponseId = LlmRetryClassifier.str(((Map<?, ?>) event.payload.get("response")).get("id"));
+            if (providerResponseId != null) break;
+        }
+        EntityValue rv = request.localStreamResponseId != null ? ec.getEntity().find("moqui.llm.LlmResponse")
+                .condition("llmResponseId", request.localStreamResponseId).disableAuthz().one() : null;
+        if (rv == null) {
+            rv = ec.getEntity().makeValue("moqui.llm.LlmResponse");
+            rv.setSequencedIdPrimary();
+            rv.set("llmRequestId", request.localRequestId);
+            rv.set("conversationId", conversationId);
+            rv.set("runId", request.runId);
+            rv.set("ownerUserId", userId);
+            rv.set("profileName", profileName);
+            rv.set("model", model);
+            rv.set("specVersion", request.specVersion);
+            rv.set("status", "in_progress");
+            rv.set("dataVersion", 2);
+            rv.set("transportEnumId", transportEnumId(org.moqui.llm.LlmTransport.SSE, protocolName));
+            rv.set("createdDate", now(ec));
+            if (providerResponseId != null) rv.set("providerResponseId", providerResponseId);
+            rv.create();
+            request.localStreamResponseId = rv.getString("llmResponseId");
+        } else if (providerResponseId != null && rv.get("providerResponseId") == null) {
+            rv.set("providerResponseId", providerResponseId);
+            rv.update();
+        }
+        writeResponseEvents(request.localStreamResponseId, providerResponseId, batch, 0, request.streamEventsPersisted);
+        request.streamEventsPersisted += batch.size();
+    }
+
+    /** A stream that ended without a usable response leaves its row marked interrupted, with the reason. */
+    void markStreamInterrupted(ProtocolRequest request, Object error) {
+        if (!hasEntity(ec) || request == null || request.localStreamResponseId == null) return;
+        EntityValue rv = ec.getEntity().find("moqui.llm.LlmResponse")
+                .condition("llmResponseId", request.localStreamResponseId).disableAuthz().one();
+        if (rv == null || !"in_progress".equals(rv.getString("status"))) return;
+        rv.set("status", "interrupted");
+        rv.set("errorJson", error != null ? LlmJson.toExactJson(error) : null);
+        rv.update();
+    }
+
+    void updateOpenResponsesRequestStatus(String llmRequestId, String statusId, Integer httpStatus, Object error) {
+        if (!hasEntity(ec) || llmRequestId == null) return;
+        EntityValue rv = ec.getEntity().find("moqui.llm.LlmRequest").condition("llmRequestId", llmRequestId)
+                .disableAuthz().one();
+        if (rv == null) return;
+        rv.set("localStatusEnumId", statusId);
+        rv.set("httpStatus", httpStatus);
+        rv.set("sendFinishedDate", now(ec));
+        rv.set("errorJson", error != null ? LlmJson.toExactJson(error) : null);
+        rv.update();
+    }
+
+    private String writeOpenResponsesResource(String callId, String profileName, String model, String protocolName,
+            ProtocolResult result, boolean logContent) {
+        if (result == null || (result.responseId == null && (result.outputItems == null || result.outputItems.isEmpty())
+                && result.responsePayload == null)) return null;
+        LlmRunStore.assertFence(ec, result.runId, result.runFence);
+        EntityValue rv = result.localStreamResponseId != null ? ec.getEntity().find("moqui.llm.LlmResponse")
+                .condition("llmResponseId", result.localStreamResponseId).disableAuthz().one() : null;
+        boolean existing = rv != null;
+        if (!existing) {
+            rv = ec.getEntity().makeValue("moqui.llm.LlmResponse");
+            rv.setSequencedIdPrimary();
+        }
+        String llmResponseId = rv.getString("llmResponseId");
+        rv.set("providerResponseId", result.responseId);
+        rv.set("dataVersion", 2);
+        rv.set("llmRequestId", result.localRequestId);
+        rv.set("conversationId", conversationId);
+        rv.set("runId", result.runId);
+        rv.set("ownerUserId", userId);
+        rv.set("callId", callId);
+        rv.set("profileName", profileName);
+        rv.set("model", result.model != null ? result.model : model);
+        rv.set("specVersion", result.specVersion);
+        rv.set("objectType", result.responsePayload != null && result.responsePayload.get("object") != null
+                ? result.responsePayload.get("object").toString() : null);
+        rv.set("status", result.status);
+        rv.set("previousProviderResponseId", result.previousResponseId);
+        rv.set("transportEnumId", transportEnumId(result.transport, protocolName));
+        rv.set("finishReason", result.finishReason != null ? result.finishReason.name() : null);
+        rv.set("httpStatus", result.httpStatus);
+        if (result.usage != null) {
+            rv.set("promptTokens", result.usage.promptTokens);
+            rv.set("completionTokens", result.usage.completionTokens);
+            rv.set("totalTokens", result.usage.totalTokens);
+            rv.set("cachedInputTokens", result.usage.cachedInputTokens);
+            rv.set("reasoningOutputTokens", result.usage.reasoningOutputTokens);
+        }
+        // what the provider echoed, null and default values included; what was sent is on the request
+        rv.set("optionsJson", result.responseOptions != null ? LlmJson.toExactJson(result.responseOptions.asMap()) : null);
+        if (result.responsePayload != null) {
+            Object metadata = result.responsePayload.get("metadata");
+            Object error = result.responsePayload.get("error");
+            Object incomplete = result.responsePayload.get("incomplete_details");
+            rv.set("metadataJson", metadata != null ? LlmJson.toExactJson(metadata) : null);
+            rv.set("errorJson", error != null ? LlmJson.toExactJson(error) : null);
+            rv.set("incompleteDetailsJson", incomplete != null ? LlmJson.toExactJson(incomplete) : null);
+            rv.set("payloadJson", LlmJson.toExactJson(result.responsePayload));
+            if (result.responsePayload.containsKey("usage"))
+                rv.set("usageJson", LlmJson.toExactJson(result.responsePayload.get("usage")));
+        }
+        Timestamp now = now(ec);
+        rv.set("createdDate", result.createdAt != null ? result.createdAt : now);
+        if ("completed".equalsIgnoreCase(result.status) || "failed".equalsIgnoreCase(result.status)
+                || "incomplete".equalsIgnoreCase(result.status))
+            rv.set("completedDate", result.completedAt != null ? result.completedAt : now);
+        if (existing) rv.update(); else rv.create();
+        if (result.outputItems != null) writeItems(null, llmResponseId, result.outputItems, 1, profileName, result.runId);
+        if (result.events != null) writeResponseEvents(llmResponseId, result.responseId, result.events,
+                existing ? result.streamEventsPersisted : 0);
+        if (result.localRequestId != null)
+            updateOpenResponsesRequestStatus(result.localRequestId, "LlmReqAck", result.httpStatus, null);
+        return llmResponseId;
+    }
+
+    private int writeItems(String llmRequestId, String llmResponseId, List<LlmItem> items, int itemSeq, String profileName,
+            String runId) {
+        if ((llmRequestId == null) == (llmResponseId == null))
+            throw new IllegalArgumentException("An item belongs to exactly one request or one response");
+        for (LlmItem item : items) {
+            if (item == null) continue;
+            String[] source = llmRequestId != null ? resolveSource(item, profileName) : new String[] {null, null};
+            EntityValue iv = ec.getEntity().makeValue("moqui.llm.LlmItem");
+            iv.setSequencedIdPrimary();
+            String llmItemId = iv.getString("llmItemId");
+            iv.set("llmRequestId", llmRequestId);
+            iv.set("llmResponseId", llmResponseId);
+            iv.set("sourceLlmItemId", source[0]);
+            iv.set("sourceStatus", source[1]);
+            iv.set("sequenceNum", itemSeq);
+            iv.set("providerItemId", item.providerItemId);
+            iv.set("itemType", item.type);
+            iv.set("status", item.status);
+            iv.set("role", item.role);
+            iv.set("phase", item.phase);
+            iv.set("providerCallId", item.callId);
+            iv.set("toolName", item.name);
+            iv.set("argumentsJson", item.arguments);
+            iv.set("outputJson", item.output != null ? LlmJson.toJson(item.output) : null);
+            iv.set("outputShape", outputShape(item.output));
+            iv.set("encryptedContent", item.encryptedContent);
+            iv.set("createdBy", item.createdBy);
+            iv.set("referenceId", item.referenceId);
+            iv.set("payloadJson", item.payload != null ? LlmJson.toExactJson(item.payload) : null);
+            iv.create();
+            // each kind of content is numbered from 1 on its own, so no kind depends on how many another has
+            boolean responseOwned = llmResponseId != null;
+            writeContent(llmItemId, item, item.content, "content", responseOwned, llmResponseId, runId);
+            writeContent(llmItemId, item, item.summary, "summary", responseOwned, llmResponseId, runId);
+            writeContent(llmItemId, item, OpenResponsesCodec.outputParts(item.output), "output", responseOwned, llmResponseId, runId);
+            itemSeq++;
+        }
+        return itemSeq;
+    }
+
+    /**
+     * The earlier response item this request item replays. A source the caller names must belong to the same owner; the
+     * refusal says nothing about whether the row exists. Without one, an item carrying a provider item id is matched to
+     * the latest response item with that id of the same owner and profile; provider ids are not unique across owners
+     * or endpoints, so nothing else is matched.
+     */
+    private String[] resolveSource(LlmItem item, String profileName) {
+        if (item.sourceItemId != null && !item.sourceItemId.isBlank()) {
+            EntityValue source = ec.getEntity().find("moqui.llm.LlmItem").condition("llmItemId", item.sourceItemId)
+                    .disableAuthz().useCache(false).one();
+            if (source == null || !ownedByThisUser(source))
+                throw new IllegalArgumentException("The source item is not available");
+            return new String[] {item.sourceItemId, "named"};
+        }
+        if (item.providerItemId == null || item.providerItemId.isBlank() || userId == null) return new String[] {null, null};
+        List<String> compatible = new ArrayList<>();
+        for (EntityValue candidate : ec.getEntity().find("moqui.llm.LlmItem").condition("providerItemId", item.providerItemId)
+                .condition("llmResponseId", org.moqui.entity.EntityCondition.NOT_EQUAL, null)
+                .disableAuthz().useCache(false).limit(50).list()) {
+            // provider ids are not unique: the owner, the profile and the kind of item all have to agree
+            if (item.type != null && !item.type.equals(candidate.get("itemType"))) continue;
+            EntityValue response = ec.getEntity().find("moqui.llm.LlmResponse")
+                    .condition("llmResponseId", candidate.get("llmResponseId")).disableAuthz().useCache(false).one();
+            if (response == null || !userId.equals(response.get("ownerUserId"))) continue;
+            if (profileName != null && !profileName.equals(response.get("profileName"))) continue;
+            compatible.add(candidate.getString("llmItemId"));
+        }
+        if (compatible.size() == 1) return new String[] {compatible.get(0), "matched"};
+        // none matched, or several could be it: nothing is picked, and the item says which
+        return new String[] {null, compatible.isEmpty() ? "unmatched" : "unresolved"};
+    }
+
+    private boolean ownedByThisUser(EntityValue item) {
+        String owner = null;
+        if (item.get("llmResponseId") != null) {
+            EntityValue response = ec.getEntity().find("moqui.llm.LlmResponse")
+                    .condition("llmResponseId", item.get("llmResponseId")).disableAuthz().useCache(false).one();
+            owner = response != null ? (String) response.get("ownerUserId") : null;
+        } else if (item.get("llmRequestId") != null) {
+            EntityValue request = ec.getEntity().find("moqui.llm.LlmRequest")
+                    .condition("llmRequestId", item.get("llmRequestId")).disableAuthz().useCache(false).one();
+            owner = request != null ? (String) request.get("ownerUserId") : null;
+        }
+        return owner != null && owner.equals(userId);
+    }
+
+    private void writeContent(String llmItemId, LlmItem ownerItem, List<LlmContentPart> content,
+            String contentKind, boolean responseOwned, String llmResponseId, String runId) {
+        if (content == null) return;
+        int contentSeq = 1;
+        for (LlmContentPart part : content) {
+            if (part == null) continue;
+            EntityValue cv = ec.getEntity().makeValue("moqui.llm.LlmContent");
+            cv.setSequencedIdPrimary();
+            cv.set("llmItemId", llmItemId);
+            cv.set("sequenceNum", contentSeq);
+            cv.set("contentType", part.type);
+            cv.set("contentKind", contentKind);
+            cv.set("purposeEnumId", contentPurposeEnumId(ownerItem, contentKind, responseOwned));
+            cv.set("textContent", part.text);
+            cv.set("refusal", part.refusal);
+            cv.set("imageUrl", part.imageUrl);
+            cv.set("fileData", part.fileData);
+            cv.set("fileUrl", part.fileUrl);
+            cv.set("videoUrl", part.videoUrl);
+            cv.set("filename", part.filename);
+            cv.set("detail", part.detail);
+            cv.set("contentLocation", part.contentLocation);
+            cv.set("mediaType", part.mediaType);
+            cv.set("contentLength", part.contentLength != null ? part.contentLength.intValue() : null);
+            cv.set("contentSha256", part.contentSha256);
+            cv.set("annotationsJson", part.annotations != null ? LlmJson.toJson(part.annotations) : null);
+            cv.set("logprobsJson", part.logprobs != null ? LlmJson.toJson(part.logprobs) : null);
+            cv.set("payloadJson", part.payload != null ? LlmJson.toExactJson(part.payload) : null);
+            cv.create();
+            projectContent(cv.getString("llmContentId"), ownerItem, contentKind, part, llmResponseId, runId);
+            contentSeq++;
+        }
+    }
+
+    /**
+     * The searchable copy of readable text. Only what the application and the model said in plain text is copied:
+     * messages and tool outputs, not reasoning, summaries, compaction, files, images or refusals' payloads. The exact,
+     * encrypted record stays in LlmContent; the copy is plain text in LlmContextProjection, scoped to its owner,
+     * conversation and run, written in the same transaction as the content, and removed with it by the retention
+     * service. It can be switched off with the system property moqui.llm.projection=false or the environment variable
+     * llm_context_projection=false.
+     */
+    private void projectContent(String llmContentId, LlmItem item, String contentKind, LlmContentPart part,
+            String llmResponseId, String runId) {
+        if (userId == null || part == null || part.text == null || part.text.isBlank() || llmContentId == null) return;
+        if (!projectionEnabled() || !isProjectable(item, contentKind, part)) return;
+        EntityValue pv = ec.getEntity().makeValue("moqui.llm.LlmContextProjection");
+        pv.setSequencedIdPrimary();
+        pv.set("userId", userId);
+        pv.set("conversationId", conversationId);
+        pv.set("runId", runId);
+        pv.set("llmResponseId", llmResponseId);
+        pv.set("sourceType", CONTENT_SOURCE);
+        pv.set("sourceId", llmContentId);
+        pv.set("textContent", part.text);
+        pv.set("createdDate", now(ec));
+        pv.create();
+    }
+
+    /** sourceType of the projection rows made from content; the sourceId is the LlmContent id. */
+    static final String CONTENT_SOURCE = "content";
+
+    static boolean isProjectable(LlmItem item, String contentKind, LlmContentPart part) {
+        if (item == null || "summary".equals(contentKind)) return false;
+        if (!"message".equals(item.type) && !"function_call_output".equals(item.type)) return false;
+        return part.type == null || "input_text".equals(part.type) || "output_text".equals(part.type) || "text".equals(part.type);
+    }
+
+    static boolean projectionEnabled() {
+        String value = System.getProperty("moqui.llm.projection");
+        if (value == null) value = System.getenv("llm_context_projection");
+        return value == null || !"false".equalsIgnoreCase(value.trim());
+    }
+
+    private static String inputShape(Map<String, Object> requestBody) {
+        if (requestBody == null || !requestBody.containsKey("input")) return "absent";
+        Object input = requestBody.get("input");
+        if (input == null) return "null";
+        if (input instanceof String) return "string";
+        if (input instanceof List) return "array";
+        return input.getClass().getSimpleName();
+    }
+
+    private static String outputShape(Object output) {
+        if (output == null) return "null";
+        if (output instanceof String) return "string";
+        if (output instanceof List) return "array";
+        if (output instanceof Map) return "object";
+        return output.getClass().getSimpleName();
+    }
+
+    /**
+     * Who produced the content, from what it is and not from where the row sits: the model's messages, reasoning,
+     * summaries and compaction are Assistant also when replayed in a request; what the application supplied (user,
+     * system and developer messages, tool output arrays) is User.
+     */
+    private static String contentPurposeEnumId(LlmItem item, String contentKind, boolean responseOwned) {
+        if ("summary".equals(contentKind)) return "LlmCpAssistant";
+        if (item == null) return responseOwned ? "LlmCpAssistant" : "LlmCpUser";
+        if ("function_call_output".equals(item.type)) return "LlmCpUser";
+        if ("reasoning".equals(item.type) || "compaction".equals(item.type) || "assistant".equals(item.role))
+            return "LlmCpAssistant";
+        if (item.role != null) return "LlmCpUser";
+        return responseOwned ? "LlmCpAssistant" : "LlmCpUser";
+    }
+
+    /** Writes the events after the first {@code alreadyWritten}; the local sequence continues where the earlier batch ended. */
+    private void writeResponseEvents(String llmResponseId, String providerResponseId, List<LlmResponseEvent> events,
+            int alreadyWritten) {
+        writeResponseEvents(llmResponseId, providerResponseId, events, alreadyWritten, alreadyWritten);
+    }
+
+    private void writeResponseEvents(String llmResponseId, String providerResponseId, List<LlmResponseEvent> events,
+            int alreadyWritten, int sequenceBase) {
+        if (events == null) return;
+        int sequenceNum = sequenceBase + 1;
+        int position = 0;
+        for (LlmResponseEvent event : events) {
+            if (position++ < alreadyWritten) continue;
+            if (event == null || event.type == null || event.type.isBlank()) continue;
+            EntityValue ev = ec.getEntity().makeValue("moqui.llm.LlmResponseEvent");
+            ev.setSequencedIdPrimary();
+            ev.set("llmResponseId", llmResponseId);
+            ev.set("providerResponseId", event.responseId != null ? event.responseId : providerResponseId);
+            ev.set("providerItemId", event.itemId);
+            ev.set("eventType", event.type);
+            int localSeq = sequenceNum++;
+            ev.set("sequenceNum", localSeq);
+            ev.set("providerSequenceNum", event.sequenceNumber);
+            ev.set("localSequenceNum", localSeq);
+            ev.set("outputIndex", event.outputIndex);
+            ev.set("contentIndex", event.contentIndex);
+            ev.set("terminal", event.terminal ? "Y" : "N");
+            String payloadJson = event.payload != null ? LlmJson.toExactJson(event.payload) : "{}";
+            ev.set("payloadJson", payloadJson);
+            ev.set("payloadSha256", sha256Hex(payloadJson));
+            ev.set("eventDate", now(ec));
+            ev.create();
+        }
+    }
+
+    private static String transportEnumId(org.moqui.llm.LlmTransport transport, String protocolName) {
+        if (transport == org.moqui.llm.LlmTransport.SSE) return "LlmTrSse";
+        if (transport == org.moqui.llm.LlmTransport.WEBSOCKET) return "LlmTrWebSocket";
+        return protocolName != null && protocolName.toLowerCase().contains("responses") ? "LlmTrHttp" : null;
     }
 
     boolean isStreamingOrYielded() {
@@ -702,10 +1303,7 @@ public class LlmConversationImpl implements LlmConversation {
     private void removeInternal(LlmMessage found) {
         messages.remove(found);
         if (found.role == LlmMessage.Role.SYSTEM) systemText = findSystem() != null ? findSystem().content : null;
-        if (hasEntity(ec) && found.messageId != null) {
-            EntityValue ev = ec.getEntity().find("moqui.llm.LlmMessage").condition("messageId", found.messageId).one();
-            if (ev != null) ev.delete();
-        }
+        if (hasEntity(ec) && found.messageId != null && !itemModel) LlmMessageStore.remove(ec, found.messageId);
         updateHeader();
     }
 
@@ -719,15 +1317,7 @@ public class LlmConversationImpl implements LlmConversation {
     private int nextOrdinal() {
         int next = 0;
         for (LlmMessage m : messages) if (m.ordinal >= next) next = m.ordinal + 1;
-        if (hasEntity(ec) && conversationId != null) {
-            EntityList el = ec.getEntity().find("moqui.llm.LlmMessage")
-                    .condition("conversationId", conversationId)
-                    .orderBy("-ordinal").limit(1).useCache(false).list();
-            if (el != null && el.size() > 0) {
-                Long o = el.getFirst().getLong("ordinal");
-                if (o != null && o.intValue() + 1 > next) next = o.intValue() + 1;
-            }
-        }
+        if (hasEntity(ec) && conversationId != null && !itemModel) next = Math.max(next, LlmMessageStore.nextOrdinal(ec, conversationId));
         return next;
     }
 
@@ -751,6 +1341,7 @@ public class LlmConversationImpl implements LlmConversation {
         s.pendingToolCalls.addAll(pendingToolCalls);
         s.attributes.putAll(attributes);
         s.lastMessageDate = lastMessageDate;
+        s.messageModel = messageModel; s.headRunId = headRunId; s.headVersion = headVersion;
         for (LlmMessage m : messages) s.messages.add(m != null ? m.copy() : null);
         return s;
     }
@@ -776,6 +1367,7 @@ public class LlmConversationImpl implements LlmConversation {
         attributes.clear();
         attributes.putAll(s.attributes);
         lastMessageDate = s.lastMessageDate;
+        messageModel = s.messageModel; itemModel = isItemModel(messageModel); headRunId = s.headRunId; headVersion = s.headVersion;
         messages.clear();
         messages.addAll(s.messages);
     }
@@ -788,6 +1380,8 @@ public class LlmConversationImpl implements LlmConversation {
         final List<LlmToolCall> pendingToolCalls = new ArrayList<>();
         final Map<String, Object> attributes = new LinkedHashMap<>();
         Timestamp lastMessageDate;
+        String messageModel, headRunId;
+        Long headVersion;
         final List<LlmMessage> messages = new ArrayList<>();
     }
 
@@ -813,7 +1407,7 @@ public class LlmConversationImpl implements LlmConversation {
         systemText = header.getString("systemText");
         windowPolicy = WindowPolicy.fromMap(LlmJson.toMap(header.getString("windowPolicyJson")));
         pendingToolCalls.clear();
-        pendingToolCalls.addAll(parseToolCalls(header.getString("pendingToolCallsJson")));
+        pendingToolCalls.addAll(LlmMessageStore.parseToolCalls(header.getString("pendingToolCallsJson")));
         attributes.clear();
         Map<String, Object> attrs = LlmJson.toMap(header.getString("attributesJson"));
         if (attrs != null) attributes.putAll(attrs);
@@ -826,11 +1420,18 @@ public class LlmConversationImpl implements LlmConversation {
             migratedCanvas = true;
         }
         lastMessageDate = header.getTimestamp("lastMessageDate");
+        messageModel = header.getString("messageModel");
+        headRunId = header.getString("headRunId");
+        headVersion = header.getLong("headVersion");
+        itemModel = isItemModel(messageModel);
         messages.clear();
-        EntityList list = ec.getEntity().find("moqui.llm.LlmMessage")
-                .condition("conversationId", conversationId).orderBy("ordinal").list();
-        int size = list.size();
-        for (int i = 0; i < size; i++) messages.add(fromEntity(list.get(i)));
+        if (itemModel) {
+            if (systemText != null && !systemText.isBlank()) messages.add(LlmMessage.system(systemText));
+            messages.addAll(ItemHistory.toMessages(trajectoryForView()));
+            for (int i = 0; i < messages.size(); i++) messages.get(i).ordinal = i;
+        } else {
+            messages.addAll(LlmMessageStore.readAll(ec, conversationId));
+        }
         if (migratedCanvas) updateHeader();
     }
 
@@ -853,7 +1454,12 @@ public class LlmConversationImpl implements LlmConversation {
         ev.set("attributesJson", attributes.isEmpty() ? null : LlmJson.toJson(attributes));
         ev.set("lastMessageDate", lastMessageDate);
         ev.set("messageCount", visibleMessageCount(messages));
-        if (create) ev.create();
+        ev.set("messageModel", messageModel);
+        if (create) {
+            ev.set("headRunId", headRunId);
+            ev.set("headVersion", headVersion);
+            ev.create();
+        }
         else ev.update();
     }
 
@@ -882,110 +1488,49 @@ public class LlmConversationImpl implements LlmConversation {
         }
     }
 
+    /** A conversation of the item model keeps no message rows: its trajectory is the structured items of its runs. */
     private void writeMessage(LlmMessage m, boolean create) {
-        if (!hasEntity(ec)) return;
-        EntityValue ev;
-        if (create || m.messageId == null) {
-            ev = ec.getEntity().makeValue("moqui.llm.LlmMessage");
-            ev.setSequencedIdPrimary();
-            m.messageId = ev.getString("messageId");
-            ev.set("conversationId", conversationId);
-            fillMessage(ev, m);
-            ev.create();
-        } else {
-            ev = ec.getEntity().find("moqui.llm.LlmMessage").condition("messageId", m.messageId).one();
-            if (ev == null) {
-                ev = ec.getEntity().makeValue("moqui.llm.LlmMessage");
-                ev.set("messageId", m.messageId);
-                ev.set("conversationId", conversationId);
-                fillMessage(ev, m);
-                ev.create();
-            } else {
-                fillMessage(ev, m);
-                ev.update();
-            }
-        }
+        if (!hasEntity(ec) || itemModel) return;
+        LlmMessageStore.write(ec, conversationId, m, create);
     }
 
-    private void fillMessage(EntityValue ev, LlmMessage m) {
-        ev.set("ordinal", m.ordinal);
-        ev.set("role", m.role != null ? m.role.name() : LlmMessage.Role.USER.name());
-        ev.set("content", m.content);
-        ev.set("name", m.name);
-        ev.set("toolCallId", m.toolCallId);
-        ev.set("toolCallsJson", m.toolCalls == null || m.toolCalls.isEmpty() ? null : LlmJson.toJson(m.toolCalls));
-        ev.set("metadataJson", m.metadata == null || m.metadata.isEmpty() ? null : LlmJson.toJson(m.metadata));
-        ev.set("tokenEstimate", tokenEstimate(m.content));
-        ev.set("sentDate", m.sentDate != null ? m.sentDate : now(ec));
-    }
-
-    private static LlmMessage fromEntity(EntityValue ev) {
-        LlmMessage m = new LlmMessage();
-        m.messageId = ev.getString("messageId");
-        Long ord = ev.getLong("ordinal");
-        m.ordinal = ord != null ? ord.intValue() : 0;
-        String role = ev.getString("role");
+    private static String sha256Hex(String value) {
         try {
-            m.role = role != null ? LlmMessage.Role.valueOf(role) : LlmMessage.Role.USER;
-        } catch (IllegalArgumentException e) {
-            m.role = LlmMessage.Role.USER;
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder out = new StringBuilder(digest.length * 2);
+            for (byte item : digest) out.append(String.format("%02x", item & 0xff));
+            return out.toString();
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is unavailable", e);
         }
-        m.content = ev.getString("content");
-        m.name = ev.getString("name");
-        m.toolCallId = ev.getString("toolCallId");
-        m.toolCalls = parseToolCalls(ev.getString("toolCallsJson"));
-        m.metadata = LlmJson.toMap(ev.getString("metadataJson"));
-        m.sentDate = ev.getTimestamp("sentDate");
-        return m;
-    }
-
-    @SuppressWarnings("unchecked")
-    private static List<LlmToolCall> parseToolCalls(String json) {
-        List<LlmToolCall> out = new ArrayList<>();
-        if (json == null || json.isBlank()) return out;
-        Object obj = LlmJson.toObject(json);
-        if (!(obj instanceof List)) return out;
-        for (Object item : (List<?>) obj) {
-            if (item instanceof LlmToolCall) {
-                out.add((LlmToolCall) item);
-            } else if (item instanceof Map) {
-                Map<String, Object> map = (Map<String, Object>) item;
-                LlmToolCall tc = new LlmToolCall();
-                Object id = map.get("id");
-                Object name = map.get("name");
-                Object args = map.get("arguments");
-                tc.id = id != null ? id.toString() : null;
-                tc.name = name != null ? name.toString() : null;
-                if (args instanceof Map || args instanceof List) tc.arguments = LlmJson.toJson(args);
-                else tc.arguments = args != null ? args.toString() : null;
-                Object exec = map.get("execution");
-                if (exec != null) {
-                    try {
-                        tc.execution = org.moqui.llm.LlmTool.Execution.valueOf(exec.toString().toUpperCase());
-                    } catch (Exception ignored) { }
-                }
-                if (Boolean.TRUE.equals(map.get("confirm")) || "true".equals(String.valueOf(map.get("confirm"))))
-                    tc.confirm = Boolean.TRUE;
-                Object risk = map.get("risk");
-                if (risk != null) tc.risk = risk.toString();
-                out.add(tc);
-            }
-        }
-        return out;
     }
 
     private static List<LlmMessage> trimRest(List<LlmMessage> rest, WindowPolicy policy, int reservedChars) {
         if (rest.isEmpty()) return rest;
         List<LlmMessage> kept = new ArrayList<>(rest);
+        LlmMessage latestUser = null;
+        for (LlmMessage message : rest) {
+            if (message.role == LlmMessage.Role.USER) latestUser = message;
+        }
         while (!kept.isEmpty()) {
-            boolean overMessages = policy.maxMessages > 0 && kept.size() > policy.maxMessages;
+            int messageLimit = policy.maxMessages;
+            if (messageLimit > 0 && latestUser != null && kept.contains(latestUser)) messageLimit++;
+            boolean overMessages = messageLimit > 0 && kept.size() > messageLimit;
             boolean overChars = policy.maxChars > 0 && (reservedChars + charsOfAll(kept)) > policy.maxChars;
             if (!overMessages && !overChars) break;
-            int drop = 1;
-            if (policy.keepToolPairs) drop = pairLength(kept, 0);
+            int dropIndex = 0;
+            int drop = policy.keepToolPairs ? pairLength(kept, 0) : 1;
             if (drop < 1) drop = 1;
-            if (drop > kept.size()) drop = kept.size();
-            kept.subList(0, drop).clear();
+            int latestUserIndex = latestUser != null ? kept.indexOf(latestUser) : -1;
+            if (latestUserIndex >= 0 && latestUserIndex < drop) {
+                if (latestUserIndex + 1 >= kept.size()) break;
+                dropIndex = latestUserIndex + 1;
+                drop = policy.keepToolPairs ? pairLength(kept, dropIndex) : 1;
+                if (drop < 1) drop = 1;
+            }
+            int dropEnd = Math.min(dropIndex + drop, kept.size());
+            kept.subList(dropIndex, dropEnd).clear();
         }
         return kept;
     }

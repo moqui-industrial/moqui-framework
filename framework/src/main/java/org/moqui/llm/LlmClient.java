@@ -26,6 +26,12 @@ public interface LlmClient {
 
     LlmClient system(String content);
     LlmClient user(String content);
+    /** Canonical Open Responses input items for this request. Takes precedence over the message window. */
+    LlmClient inputItems(List<LlmItem> items);
+    /** Validated Open Responses request options. */
+    LlmClient responseOptions(LlmResponseOptions options);
+    /** Continue a provider-persisted response chain with only the new input items. */
+    LlmClient previousResponse(String responseId);
     /** Extra messages for this HTTP round only. Never persisted. */
     LlmClient messages(List<LlmMessage> extra);
     LlmClient injectContext(String source, String content);
@@ -41,10 +47,14 @@ public interface LlmClient {
     LlmClient temperature(double t);
     LlmClient maxTokens(int n);
     LlmClient timeout(int seconds);
+    /** Select HTTP, SSE, or WebSocket transport where supported by the configured protocol. */
+    LlmClient transport(LlmTransport transport);
     LlmClient maxIterations(int n);
     LlmClient extraBody(Map<String, Object> body);
     LlmClient windowPolicy(WindowPolicy policy);
 
     LlmResponse call();
     LlmResponse stream(LlmStreamListener listener);
+    /** Compact the configured Open Responses input trajectory for a later request. */
+    LlmCompactResult compact();
 }

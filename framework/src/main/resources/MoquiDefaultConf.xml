@@ -490,6 +490,9 @@
     <llm-facade enabled="true" default-profile="default">
         <profile name="default" url="${llm_openai_url}" api-key="${llm_openai_api_key}"
                 model="${llm_openai_model}" log-content="${llm_log_content}"/>
+        <profile name="openai-responses" protocol="org.moqui.impl.llm.OpenAiResponsesProtocol"
+                url="${llm_openai_url}" api-key="${llm_openai_api_key}"
+                model="${llm_openai_model}" log-content="${llm_log_content}"/>
         <!-- No allowed-path: servlet does not attach the request tool. Add prefixes in runtime conf, e.g.:
              <allowed-path prefix="/rest/s1/mantle/" methods="GET,POST,PUT,PATCH,DELETE"/>
              <allowed-path prefix="/qapps/mantle/" methods="GET"/>
@@ -596,6 +599,7 @@
         <load-entity location="classpath://entity/Screen.eecas.xml"/>
         <load-entity location="classpath://entity/SecurityEntities.xml"/>
         <load-entity location="classpath://entity/Security.eecas.xml"/>
+        <load-entity location="classpath://entity/Llm.eecas.xml"/>
         <load-entity location="classpath://entity/ServerEntities.xml"/>
         <load-entity location="classpath://entity/ServiceEntities.xml"/>
         <load-entity location="classpath://entity/TestEntities.xml"/>

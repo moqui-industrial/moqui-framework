@@ -1,0 +1,31 @@
+{
+  "repoUrl": "https://github.com/openresponses/openresponses.git",
+  "commit": "92c12d96d7b61d6d15e2214daa5e9c6000ab6e1c",
+  "retrievedDate": "2026-10-05",
+  "bunVersion": "1.2.22",
+  "files": {
+    "bin/compliance-test.ts": "6c250eae6c9a282cfdd676d314bd52a7462d58b9061dbd7f88a1c96fd67d26a9",
+    "public/openapi/openapi.json": "693f26090d206230ed22b336681f547a2882cf5b131e86743966cf71bbdeedab",
+    "bun.lock": "029148e8d8c4b8c5e9ed48a2651cbf823320e41885418c02c358567e54a75126",
+    "package.json": "3d1d6dc6cb2a13d81bc5ec3b6baaf0c706ff727cafdb4b03a47f39e0ce82cfa7"
+  },
+  "expectedTestIds": [
+    "basic-response",
+    "assistant-phase",
+    "response-output-phase-schema",
+    "streaming-response",
+    "websocket-response",
+    "websocket-sequential-responses",
+    "websocket-continuation",
+    "websocket-reconnect-store-false-recovery",
+    "websocket-previous-response-not-found",
+    "websocket-failed-continuation-evicts-cache",
+    "websocket-compact-new-chain",
+    "system-prompt",
+    "tool-calling",
+    "image-input",
+    "multi-turn",
+    "compact-response",
+    "compact-missing-model"
+  ]
+}

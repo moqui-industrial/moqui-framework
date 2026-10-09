@@ -405,6 +405,39 @@ public class RestClient {
         }
     }
 
+    private long sseMaxEventChars = 0L;
+    private long sseMaxStreamChars = 0L;
+    /**
+     * Bounds for {@link #streamSse}: the characters of one event (its lines together) and of the whole stream; 0 is no bound,
+     * which is the default. A stream past a bound fails with an IOException, never with silently cut data.
+     */
+    public RestClient sseLimits(long maxEventChars, long maxStreamChars) {
+        this.sseMaxEventChars = Math.max(maxEventChars, 0L);
+        this.sseMaxStreamChars = Math.max(maxStreamChars, 0L);
+        return this;
+    }
+
+    /** One line, ended by LF, CR or CRLF, of at most {@code max} characters (0: no bound); null at the end of the stream. */
+    private static String readLineBounded(BufferedReader reader, long max) throws IOException {
+        if (max <= 0L) return reader.readLine();
+        StringBuilder line = new StringBuilder();
+        int c;
+        boolean any = false;
+        while ((c = reader.read()) >= 0) {
+            any = true;
+            if (c == '\n') return line.toString();
+            if (c == '\r') {
+                reader.mark(1);
+                int next = reader.read();
+                if (next != '\n' && next >= 0) reader.reset();
+                return line.toString();
+            }
+            if (line.length() >= max) throw new IOException("SSE line is longer than " + max + " characters");
+            line.append((char) c);
+        }
+        return any ? line.toString() : null;
+    }
+
     /** Parse text/event-stream. Blocks the caller thread, invoking consumer per event. */
     public void streamSse(SseConsumer consumer) {
         streamSse(consumer, null);
@@ -423,12 +456,21 @@ public class RestClient {
             String id = null;
             StringBuilder data = new StringBuilder();
             String line;
-            while ((line = reader.readLine()) != null) {
+            long eventChars = 0L;
+            long streamChars = 0L;
+            while ((line = readLineBounded(reader, sseMaxEventChars)) != null) {
+                streamChars += line.length() + 1;
+                if (sseMaxStreamChars > 0L && streamChars > sseMaxStreamChars)
+                    throw new IOException("SSE stream is longer than " + sseMaxStreamChars + " characters");
                 if (line.isEmpty()) {
+                    eventChars = 0L;
                     if (!dispatchSseEvent(consumer, event, data, id)) return;
                     event = null;
                     data.setLength(0);
                 } else if (line.charAt(0) != ':') {
+                    eventChars += line.length() + 1;
+                    if (sseMaxEventChars > 0L && eventChars > sseMaxEventChars)
+                        throw new IOException("SSE event is longer than " + sseMaxEventChars + " characters");
                     int colon = line.indexOf(':');
                     String field;
                     String value;
@@ -465,7 +507,7 @@ public class RestClient {
         String dataStr = data.toString();
         if (dataStr.endsWith("\n")) dataStr = dataStr.substring(0, dataStr.length() - 1);
         if ("[DONE]".equals(dataStr)) {
-            consumer.onComplete();
+            consumer.onDone();
             return false;
         }
         return consumer.onEvent(event, dataStr, id);
@@ -737,7 +779,10 @@ public class RestClient {
         /** Return false to stop reading.
          *  event may be null (SSE spec default). data is concatenated multi-line data. */
         boolean onEvent(String event, String data, String id);
+        /** End of the stream: the connection closed after the last event. */
         default void onComplete() {}
+        /** The literal [DONE] sentinel arrived. Chat Completions style consumers treat it like the end of the stream. */
+        default void onDone() { onComplete(); }
         default void onFailure(Throwable t) { throw new BaseException("SSE stream failed", t); }
     }
 

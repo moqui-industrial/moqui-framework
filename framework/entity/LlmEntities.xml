@@ -48,6 +48,16 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="attributesJson" type="text-long"/>
         <field name="lastMessageDate" type="date-time"/>
         <field name="messageCount" type="number-integer"/>
+        <field name="messageModel" type="text-short">
+            <description>MESSAGES (empty in old rows): the transcript is the LlmMessage rows of a message protocol.
+                ITEMS: the trajectory is the structured items of the runs of the conversation, and no LlmMessage row exists.
+                ITEMS_LEGACY: the same, for a conversation moved to the item model by the upgrade whose old LlmMessage rows
+                were kept because they are not a copy of the trajectory; they are never read again and go with the conversation.
+                Fixed by the protocol of the first profile that uses the conversation.</description></field>
+        <field name="headRunId" type="id">
+            <description>ITEMS only: the completed run whose context is the trajectory the next turn continues from.</description></field>
+        <field name="headVersion" type="number-integer">
+            <description>ITEMS only: how many times the head moved; a turn completes only if it started from the current value.</description></field>
         <relationship type="one-nofk" related="moqui.security.UserAccount"/>
         <relationship type="one-nofk" related="moqui.server.Visit"/>
         <relationship type="one-nofk" related="moqui.a2a.A2AContext"/>
@@ -69,6 +79,8 @@ along with this software (see the LICENSE.md file). If not, see
     </entity>
 
     <entity entity-name="LlmMessage" package="moqui.llm" use="transactional" cache="never">
+        <description>Historical transcript for Chat Completions and compatible APIs. Open Responses snapshots and items are
+            persisted in LlmRequest/LlmResponse/LlmItem/LlmContent; this entity is not the source for their replay.</description>
         <field name="messageId" type="id" is-pk="true"/>
         <field name="conversationId" type="id"/>
         <field name="ordinal" type="number-integer"/>
@@ -83,6 +95,388 @@ along with this software (see the LICENSE.md file). If not, see
         <relationship type="one" related="moqui.llm.LlmConversation"/>
         <index name="LLMMSG_CONV_ORD" unique="true">
             <index-field name="conversationId"/><index-field name="ordinal"/></index>
+    </entity>
+
+    <entity entity-name="LlmRequest" package="moqui.llm" use="transactional" cache="never" sequence-bank-size="100">
+        <description>Local authoritative snapshot of one Open Responses request actually prepared for transport.
+            It stores the request body separately from LlmMessage, LlmCallLog and search projections so replay and
+            recovery do not depend on logging.</description>
+        <field name="llmRequestId" type="id" is-pk="true"/>
+        <field name="conversationId" type="id"/>
+        <field name="runId" type="id"/>
+        <field name="ownerUserId" type="id" not-null="true"/>
+        <field name="callId" type="id"/>
+        <field name="retryOfRequestId" type="id"/>
+        <field name="profileName" type="text-medium"/>
+        <field name="model" type="text-medium"/>
+        <field name="protocolName" type="text-medium"/>
+        <field name="protocolEnumId" type="id"/>
+        <field name="transportEnumId" type="id"/>
+        <field name="operation" type="text-medium" not-null="true"/>
+        <field name="specVersion" type="text-short"/>
+        <field name="schemaSha256" type="text-medium"/>
+        <field name="previousProviderResponseId" type="text-medium"/>
+        <field name="inputShape" type="text-short"/>
+        <field name="localStatusEnumId" type="id" not-null="true"/>
+        <field name="requestPayloadJson" type="text-very-long" encrypt="true"/>
+        <field name="requestOptionsJson" type="text-very-long" encrypt="true"><description>The options the caller
+            asked for.</description></field>
+        <field name="effectiveOptionsJson" type="text-very-long" encrypt="true"><description>The options as sent: the
+            caller's options, extra body and the client's own fields, from the exact body on the wire.</description></field>
+        <field name="toolsJson" type="text-very-long" encrypt="true"/>
+        <field name="metadataJson" type="text-long" encrypt="true"/>
+        <field name="httpStatus" type="number-integer"/>
+        <field name="errorJson" type="text-long" encrypt="true"/>
+        <field name="createdDate" type="date-time" not-null="true"/>
+        <field name="sendStartedDate" type="date-time"/>
+        <field name="sendFinishedDate" type="date-time"/>
+        <relationship type="one-nofk" related="moqui.llm.LlmConversation"/>
+        <relationship type="one-nofk" related="moqui.llm.LlmRun"/>
+        <relationship type="one-nofk" related="moqui.security.UserAccount">
+            <key-map field-name="ownerUserId"/></relationship>
+        <relationship type="one-nofk" related="moqui.llm.LlmCallLog"/>
+        <relationship type="one-nofk" title="RetryOf" related="moqui.llm.LlmRequest">
+            <key-map field-name="retryOfRequestId" related="llmRequestId"/></relationship>
+        <relationship type="one" title="LocalStatus" related="moqui.basic.Enumeration">
+            <key-map field-name="localStatusEnumId"/></relationship>
+        <relationship type="one" title="Transport" related="moqui.basic.Enumeration">
+            <key-map field-name="transportEnumId"/></relationship>
+        <relationship type="many" related="moqui.llm.LlmItem" short-alias="items"/>
+        <index name="LLMREQ_OWNER_DATE"><index-field name="ownerUserId"/><index-field name="createdDate"/></index>
+        <index name="LLMREQ_RUN_DATE"><index-field name="runId"/><index-field name="createdDate"/></index>
+        <index name="LLMREQ_CONV_DATE"><index-field name="conversationId"/><index-field name="createdDate"/></index>
+        <seed-data>
+            <moqui.basic.EnumerationType enumTypeId="LlmRequestStatus" description="LLM Request Local Status"/>
+            <moqui.basic.Enumeration enumId="LlmReqPrepared" enumTypeId="LlmRequestStatus" enumCode="Prepared" description="Prepared"/>
+            <moqui.basic.Enumeration enumId="LlmReqSending" enumTypeId="LlmRequestStatus" enumCode="Sending" description="Sending"/>
+            <moqui.basic.Enumeration enumId="LlmReqAck" enumTypeId="LlmRequestStatus" enumCode="Acknowledged" description="Acknowledged"/>
+            <moqui.basic.Enumeration enumId="LlmReqFailed" enumTypeId="LlmRequestStatus" enumCode="Failed" description="Failed"/>
+            <moqui.basic.Enumeration enumId="LlmReqUncertain" enumTypeId="LlmRequestStatus" enumCode="Uncertain" description="Uncertain"/>
+        </seed-data>
+    </entity>
+
+    <entity entity-name="LlmResponse" package="moqui.llm" use="transactional" cache="never" sequence-bank-size="100">
+        <description>Open Responses resource persisted at the protocol boundary. Existing LlmMessage rows remain the
+            backward-compatible conversation transcript; this entity stores provider ids, status, options and raw
+            resource metadata needed for previous_response_id context chaining and replay.</description>
+        <field name="llmResponseId" type="id" is-pk="true"/>
+        <field name="providerResponseId" type="text-medium"/>
+        <field name="llmRequestId" type="id"/>
+        <field name="conversationId" type="id"/>
+        <field name="runId" type="id"/>
+        <field name="ownerUserId" type="id"/>
+        <field name="callId" type="id"/>
+        <field name="profileName" type="text-medium"/>
+        <field name="model" type="text-medium"/>
+        <field name="specVersion" type="text-short"/>
+        <field name="objectType" type="text-short"/>
+        <field name="status" type="text-short"/>
+        <field name="previousProviderResponseId" type="text-medium"/>
+        <field name="transportEnumId" type="id"/>
+        <field name="finishReason" type="text-short"/>
+        <field name="httpStatus" type="number-integer"/>
+        <field name="promptTokens" type="number-integer"/>
+        <field name="completionTokens" type="number-integer"/>
+        <field name="totalTokens" type="number-integer"/>
+        <field name="cachedInputTokens" type="number-integer"/>
+        <field name="reasoningOutputTokens" type="number-integer"/>
+        <field name="optionsJson" type="text-very-long"><description>The options the provider echoed in the response,
+            null and default values included. What was requested and what was sent is on the request.</description></field>
+        <field name="dataVersion" type="number-integer"><description>2 for a response stored with the options and the usage
+            kept apart (requested and sent on the request, echo and usage here). Empty for a response stored before; the
+            upgrade#LlmOpenResponsesData service brings those to 2 without losing anything.</description></field>
+        <field name="usageJson" type="text-long"><description>The usage object exactly as the provider returned it,
+            with its token details; the token columns are queryable copies.</description></field>
+        <field name="metadataJson" type="text-long" encrypt="true"/>
+        <field name="errorJson" type="text-long" encrypt="true"/>
+        <field name="incompleteDetailsJson" type="text-long" encrypt="true"/>
+        <field name="payloadJson" type="text-very-long" encrypt="true"/>
+        <field name="createdDate" type="date-time"/>
+        <field name="completedDate" type="date-time"/>
+        <relationship type="one-nofk" related="moqui.llm.LlmConversation"/>
+        <relationship type="one-nofk" related="moqui.llm.LlmRequest"/>
+        <relationship type="one-nofk" related="moqui.llm.LlmRun"/>
+        <relationship type="one-nofk" related="moqui.security.UserAccount">
+            <key-map field-name="ownerUserId"/></relationship>
+        <relationship type="one-nofk" related="moqui.llm.LlmCallLog"/>
+        <relationship type="one" title="Transport" related="moqui.basic.Enumeration">
+            <key-map field-name="transportEnumId"/></relationship>
+        <relationship type="many" related="moqui.llm.LlmItem" short-alias="items"/>
+        <relationship type="many" related="moqui.llm.LlmResponseEvent" short-alias="events"/>
+        <index name="LLMRESP_PROVIDER"><index-field name="profileName"/><index-field name="providerResponseId"/></index>
+        <index name="LLMRESP_OWNER_DATE"><index-field name="ownerUserId"/><index-field name="createdDate"/></index>
+        <index name="LLMRESP_RUN_DATE"><index-field name="runId"/><index-field name="createdDate"/></index>
+        <index name="LLMRESP_CONV_DATE"><index-field name="conversationId"/><index-field name="createdDate"/></index>
+        <seed-data>
+            <moqui.basic.EnumerationType enumTypeId="LlmTransport" description="LLM Transport"/>
+            <moqui.basic.Enumeration enumId="LlmTrHttp" enumTypeId="LlmTransport" enumCode="HTTP" description="HTTP"/>
+            <moqui.basic.Enumeration enumId="LlmTrSse" enumTypeId="LlmTransport" enumCode="SSE" description="Server-Sent Events"/>
+            <moqui.basic.Enumeration enumId="LlmTrWebSocket" enumTypeId="LlmTransport" enumCode="WEBSOCKET" description="WebSocket"/>
+        </seed-data>
+    </entity>
+
+    <entity entity-name="LlmItem" package="moqui.llm" use="transactional" cache="never" sequence-bank-size="100">
+        <description>Ordered Open Responses item occurrence owned by exactly one request or response. Replayed
+            response output becomes a new request-owned occurrence with sourceLlmItemId rather than moving or sharing
+            the original row.</description>
+        <field name="llmItemId" type="id" is-pk="true"/>
+        <field name="llmRequestId" type="id"/>
+        <field name="llmResponseId" type="id"/>
+        <field name="sourceLlmItemId" type="id"/>
+        <field name="sourceStatus" type="text-short"><description>For a replayed item: named (the caller gave the
+            source), matched (one response item of this owner, profile and type had that provider id), unresolved
+            (several did, none was picked) or unmatched (none did). Empty for items that are not replays.</description></field>
+        <field name="sequenceNum" type="number-integer" not-null="true"/>
+        <field name="providerItemId" type="text-medium"/>
+        <field name="itemType" type="text-short" not-null="true"/>
+        <field name="status" type="text-short"/>
+        <field name="role" type="text-short"/>
+        <field name="phase" type="text-short"/>
+        <field name="providerCallId" type="text-medium"/>
+        <field name="toolName" type="text-medium"/>
+        <field name="argumentsJson" type="text-very-long" encrypt="true"/>
+        <field name="outputJson" type="text-very-long" encrypt="true"/>
+        <field name="outputShape" type="text-short"/>
+        <field name="encryptedContent" type="text-very-long" encrypt="true"/>
+        <field name="createdBy" type="text-short"/>
+        <field name="referenceId" type="text-medium"/>
+        <field name="payloadJson" type="text-very-long" encrypt="true"/>
+        <relationship type="one-nofk" related="moqui.llm.LlmRequest"/>
+        <relationship type="one-nofk" related="moqui.llm.LlmResponse"/>
+        <relationship type="one-nofk" title="Source" related="moqui.llm.LlmItem">
+            <key-map field-name="sourceLlmItemId" related="llmItemId"/></relationship>
+        <relationship type="many" related="moqui.llm.LlmContent" short-alias="content"/>
+        <index name="LLMITEM_REQ_SEQ" unique="true">
+            <index-field name="llmRequestId"/><index-field name="sequenceNum"/></index>
+        <index name="LLMITEM_RESP_SEQ" unique="true">
+            <index-field name="llmResponseId"/><index-field name="sequenceNum"/></index>
+        <index name="LLMITEM_CALL"><index-field name="providerCallId"/></index>
+        <index name="LLMITEM_PROVIDER"><index-field name="providerItemId"/></index>
+    </entity>
+
+    <entity entity-name="LlmContent" package="moqui.llm" use="transactional" cache="never" sequence-bank-size="100">
+        <description>Ordered content part for Open Responses message/reasoning/function output arrays. For binary or
+            externally stored content this entity records the reference, media metadata and integrity hash; it does
+            not fetch remote URLs.</description>
+        <field name="llmContentId" type="id" is-pk="true"/>
+        <field name="llmItemId" type="id" not-null="true"/>
+        <field name="sequenceNum" type="number-integer" not-null="true"/>
+        <field name="contentType" type="text-short" not-null="true"/>
+        <field name="contentKind" type="text-short" not-null="true"/>
+        <field name="purposeEnumId" type="id" not-null="true"/>
+        <field name="textContent" type="text-very-long" encrypt="true"/>
+        <field name="refusal" type="text-very-long" encrypt="true"/>
+        <field name="imageUrl" type="text-very-long" encrypt="true"/>
+        <field name="fileData" type="text-very-long" encrypt="true"/>
+        <field name="fileUrl" type="text-very-long" encrypt="true"/>
+        <field name="videoUrl" type="text-very-long" encrypt="true"/>
+        <field name="filename" type="text-medium"/>
+        <field name="detail" type="text-short"/>
+        <field name="contentLocation" type="text-very-long" encrypt="true"/>
+        <field name="mediaType" type="text-medium"/>
+        <field name="contentLength" type="number-integer"/>
+        <field name="contentSha256" type="text-medium"/>
+        <field name="annotationsJson" type="text-very-long" encrypt="true"/>
+        <field name="logprobsJson" type="text-very-long" encrypt="true"/>
+        <field name="payloadJson" type="text-very-long" encrypt="true"/>
+        <relationship type="one" related="moqui.llm.LlmItem"/>
+        <relationship type="one" title="Purpose" related="moqui.basic.Enumeration">
+            <key-map field-name="purposeEnumId"/></relationship>
+        <index name="LLMCONTENT_SEQ" unique="true">
+            <index-field name="llmItemId"/><index-field name="contentKind"/><index-field name="sequenceNum"/></index>
+        <seed-data>
+            <moqui.basic.EnumerationType enumTypeId="LlmContentPurpose" description="LLM Content Purpose"/>
+            <moqui.basic.Enumeration enumId="LlmCpUser" enumTypeId="LlmContentPurpose" enumCode="User" description="User"/>
+            <moqui.basic.Enumeration enumId="LlmCpAssistant" enumTypeId="LlmContentPurpose" enumCode="Assistant" description="Assistant"/>
+        </seed-data>
+    </entity>
+
+    <entity entity-name="LlmResponseEvent" package="moqui.llm" use="transactional" cache="never" sequence-bank-size="100">
+        <description>Durable Open Responses stream event log for SSE/WebSocket replay and audit. The response and
+            item rows remain the source of truth after terminal events.</description>
+        <field name="llmResponseEventId" type="id" is-pk="true"/>
+        <field name="llmResponseId" type="id"/>
+        <field name="providerResponseId" type="text-medium"/>
+        <field name="providerItemId" type="text-medium"/>
+        <field name="eventType" type="text-medium" not-null="true"/>
+        <field name="sequenceNum" type="number-integer" not-null="true"/>
+        <field name="providerSequenceNum" type="number-integer"/>
+        <field name="localSequenceNum" type="number-integer" not-null="true"/>
+        <field name="outputIndex" type="number-integer"/>
+        <field name="contentIndex" type="number-integer"/>
+        <field name="terminal" type="text-indicator" not-null="true"/>
+        <field name="payloadJson" type="text-very-long" not-null="true" encrypt="true"/>
+        <field name="payloadSha256" type="text-medium"/>
+        <field name="eventDate" type="date-time" not-null="true"/>
+        <relationship type="one-nofk" related="moqui.llm.LlmResponse"/>
+        <index name="LLMRESPEVT_RESP_SEQ" unique="true"><index-field name="llmResponseId"/><index-field name="localSequenceNum"/></index>
+        <index name="LLMRESPEVT_PROVIDER_SEQ"><index-field name="llmResponseId"/><index-field name="providerSequenceNum"/></index>
+        <index name="LLMRESPEVT_PROVIDER"><index-field name="providerResponseId"/></index>
+    </entity>
+
+    <entity entity-name="LlmHostedTool" package="moqui.llm" use="transactional">
+        <description>Governed alias exposing a Moqui service or skill as an Open Responses hosted/function tool.
+            The alias satisfies the Responses tool name pattern while execution still goes through existing Moqui
+            authorization, skill risk gates and service permissions.</description>
+        <field name="hostedToolId" type="id" is-pk="true"/>
+        <field name="toolName" type="text-medium" not-null="true"/>
+        <field name="targetTypeEnumId" type="id" not-null="true"/>
+        <field name="serviceName" type="text-medium"/>
+        <field name="skillId" type="id"/>
+        <field name="description" type="text-long"/>
+        <field name="parametersJson" type="text-very-long"/>
+        <field name="riskId" type="id"/>
+        <field name="statusId" type="id"/>
+        <field name="metadataJson" type="text-long"/>
+        <field name="createdDate" type="date-time"/>
+        <field name="lastUpdatedDate" type="date-time"/>
+        <relationship type="one-nofk" related="moqui.llm.LlmSkill"/>
+        <relationship type="one" title="TargetType" related="moqui.basic.Enumeration">
+            <key-map field-name="targetTypeEnumId"/></relationship>
+        <relationship type="one" title="Risk" related="moqui.basic.Enumeration">
+            <key-map field-name="riskId"/></relationship>
+        <relationship type="one" title="Status" related="moqui.basic.Enumeration">
+            <key-map field-name="statusId"/></relationship>
+        <index name="LLMHOSTTOOL_NAME" unique="true"><index-field name="toolName"/></index>
+        <index name="LLMHOSTTOOL_SERVICE"><index-field name="serviceName"/></index>
+        <seed-data>
+            <moqui.basic.EnumerationType enumTypeId="LlmHostedToolTargetType" description="LLM Hosted Tool Target Type"/>
+            <moqui.basic.Enumeration enumId="LlmHttService" enumTypeId="LlmHostedToolTargetType" enumCode="service" description="Moqui Service"/>
+            <moqui.basic.Enumeration enumId="LlmHttSkill" enumTypeId="LlmHostedToolTargetType" enumCode="skill" description="LLM Skill"/>
+            <moqui.basic.EnumerationType enumTypeId="LlmHostedToolStatus" description="LLM Hosted Tool Status"/>
+            <moqui.basic.Enumeration enumId="LlmHtsActive" enumTypeId="LlmHostedToolStatus" description="Active"/>
+            <moqui.basic.Enumeration enumId="LlmHtsDisabled" enumTypeId="LlmHostedToolStatus" description="Disabled"/>
+        </seed-data>
+    </entity>
+
+    <entity entity-name="LlmRun" package="moqui.llm" use="transactional" cache="never" sequence-bank-size="100">
+        <description>Durable execution of one agentic turn. A conversation may own many runs and a run may own many
+            provider responses. contextJson is the authoritative resumable Open Responses item trajectory.</description>
+        <field name="runId" type="id" is-pk="true"/>
+        <field name="conversationId" type="id"/>
+        <field name="parentRunId" type="id"/>
+        <field name="userId" type="id" not-null="true"/>
+        <field name="visitId" type="id"/>
+        <field name="profileName" type="text-medium" not-null="true"/>
+        <field name="statusId" type="id" not-null="true"/>
+        <field name="continuationModeEnumId" type="id" not-null="true"/>
+        <field name="objective" type="text-very-long"/>
+        <field name="contextJson" type="text-very-long" encrypt="true"/>
+        <field name="checkpointJson" type="text-long"/>
+        <field name="envelopeJson" type="text-very-long" encrypt="true"><description>What a recovery needs besides
+            the context: instructions, response options, tool definitions, transport, limits. Never credentials.</description></field>
+        <field name="previousProviderResponseId" type="text-medium"/>
+        <field name="iteration" type="number-integer" not-null="true"/>
+        <field name="maxIterations" type="number-integer" not-null="true"/>
+        <field name="cancelRequested" type="text-indicator" not-null="true"/>
+        <field name="workerId" type="text-medium"/>
+        <field name="leaseUntil" type="date-time"/>
+        <field name="fencingToken" type="number-integer" not-null="true"/>
+        <field name="deadline" type="date-time"/>
+        <field name="errorMessage" type="text-long"/>
+        <field name="createdDate" type="date-time" not-null="true"/>
+        <field name="startedDate" type="date-time"/>
+        <field name="lastUpdatedDate" type="date-time" not-null="true"/>
+        <field name="completedDate" type="date-time"/>
+        <relationship type="one-nofk" related="moqui.llm.LlmConversation"/>
+        <relationship type="one-nofk" title="Parent" related="moqui.llm.LlmRun">
+            <key-map field-name="parentRunId" related="runId"/></relationship>
+        <relationship type="one-nofk" related="moqui.security.UserAccount"/>
+        <relationship type="one" title="Status" related="moqui.basic.Enumeration">
+            <key-map field-name="statusId"/></relationship>
+        <relationship type="one" title="ContinuationMode" related="moqui.basic.Enumeration">
+            <key-map field-name="continuationModeEnumId"/></relationship>
+        <relationship type="many" related="moqui.llm.LlmRunStatus" short-alias="statuses"/>
+        <relationship type="many" related="moqui.llm.LlmToolInvocation" short-alias="toolInvocations"/>
+        <index name="LLMRUN_OWNER_DATE"><index-field name="userId"/><index-field name="createdDate"/></index>
+        <index name="LLMRUN_CONV_DATE"><index-field name="conversationId"/><index-field name="createdDate"/></index>
+        <index name="LLMRUN_RECOVERY"><index-field name="statusId"/><index-field name="leaseUntil"/></index>
+        <seed-data>
+            <moqui.basic.EnumerationType enumTypeId="LlmRunStatus" description="LLM Run Status"/>
+            <moqui.basic.Enumeration enumId="LlmRunQueued" enumTypeId="LlmRunStatus" description="Queued"/>
+            <moqui.basic.Enumeration enumId="LlmRunRunning" enumTypeId="LlmRunStatus" description="Running"/>
+            <moqui.basic.Enumeration enumId="LlmRunWaitClient" enumTypeId="LlmRunStatus" description="Waiting for Client"/>
+            <moqui.basic.Enumeration enumId="LlmRunWaitProvider" enumTypeId="LlmRunStatus" description="Waiting for the provider to finish a background response"/>
+            <moqui.basic.Enumeration enumId="LlmRunWaitConfirm" enumTypeId="LlmRunStatus" description="Waiting for Confirmation"/>
+            <moqui.basic.Enumeration enumId="LlmRunRecovering" enumTypeId="LlmRunStatus" description="Recovering"/>
+            <moqui.basic.Enumeration enumId="LlmRunComplete" enumTypeId="LlmRunStatus" description="Completed"/>
+            <moqui.basic.Enumeration enumId="LlmRunFailed" enumTypeId="LlmRunStatus" description="Failed"/>
+            <moqui.basic.Enumeration enumId="LlmRunCancelled" enumTypeId="LlmRunStatus" description="Cancelled"/>
+            <moqui.basic.EnumerationType enumTypeId="LlmContinuationMode" description="LLM Continuation Mode"/>
+            <moqui.basic.Enumeration enumId="LlmContLocal" enumTypeId="LlmContinuationMode" description="Local item trajectory"/>
+            <moqui.basic.Enumeration enumId="LlmContRemote" enumTypeId="LlmContinuationMode" description="Provider previous response chain"/>
+        </seed-data>
+    </entity>
+
+    <entity entity-name="LlmRunStatus" package="moqui.llm" use="transactional" cache="never">
+        <description>Append-only run state transition journal.</description>
+        <field name="runId" type="id" is-pk="true"/>
+        <field name="statusSeqId" type="id" is-pk="true"/>
+        <field name="sequenceNum" type="number-integer" not-null="true"/>
+        <field name="statusId" type="id" not-null="true"/>
+        <field name="message" type="text-long"/>
+        <field name="statusDate" type="date-time" not-null="true"/>
+        <relationship type="one" related="moqui.llm.LlmRun"/>
+        <relationship type="one" title="Status" related="moqui.basic.Enumeration">
+            <key-map field-name="statusId"/></relationship>
+        <index name="LLMRUNSTAT_SEQ" unique="true"><index-field name="runId"/><index-field name="sequenceNum"/></index>
+    </entity>
+
+    <entity entity-name="LlmToolInvocation" package="moqui.llm" use="transactional" cache="never" sequence-bank-size="100">
+        <description>Durable execution state for a developer-hosted tool call. Uncertain means the external effect may
+            have occurred and automatic retry is forbidden until reconciliation.</description>
+        <field name="toolInvocationId" type="id" is-pk="true"/>
+        <field name="runId" type="id" not-null="true"/>
+        <field name="llmResponseId" type="id"/>
+        <field name="providerItemId" type="text-medium"/>
+        <field name="providerCallId" type="text-medium" not-null="true"/>
+        <field name="toolName" type="text-medium" not-null="true"/>
+        <field name="statusId" type="id" not-null="true"/>
+        <field name="attempt" type="number-integer" not-null="true"/>
+        <field name="idempotencyKey" type="text-medium"/>
+        <field name="argumentsJson" type="text-very-long" encrypt="true"/>
+        <field name="resultJson" type="text-very-long" encrypt="true"/>
+        <field name="workerId" type="text-medium"/>
+        <field name="fencingToken" type="number-integer"/>
+        <field name="errorMessage" type="text-long"/>
+        <field name="createdDate" type="date-time" not-null="true"/>
+        <field name="startedDate" type="date-time"/>
+        <field name="completedDate" type="date-time"/>
+        <relationship type="one" related="moqui.llm.LlmRun"/>
+        <relationship type="one-nofk" related="moqui.llm.LlmResponse"/>
+        <relationship type="one" title="Status" related="moqui.basic.Enumeration">
+            <key-map field-name="statusId"/></relationship>
+        <index name="LLMTOOLINV_CALL" unique="true"><index-field name="runId"/><index-field name="providerCallId"/></index>
+        <index name="LLMTOOLINV_IDEMP"><index-field name="idempotencyKey"/></index>
+        <seed-data>
+            <moqui.basic.EnumerationType enumTypeId="LlmToolInvocationStatus" description="LLM Tool Invocation Status"/>
+            <moqui.basic.Enumeration enumId="LlmTiPlanned" enumTypeId="LlmToolInvocationStatus" description="Planned"/>
+            <moqui.basic.Enumeration enumId="LlmTiRunning" enumTypeId="LlmToolInvocationStatus" description="Running"/>
+            <moqui.basic.Enumeration enumId="LlmTiComplete" enumTypeId="LlmToolInvocationStatus" description="Completed"/>
+            <moqui.basic.Enumeration enumId="LlmTiFailed" enumTypeId="LlmToolInvocationStatus" description="Failed"/>
+            <moqui.basic.Enumeration enumId="LlmTiUncertain" enumTypeId="LlmToolInvocationStatus" description="Outcome Uncertain"/>
+            <moqui.basic.Enumeration enumId="LlmTiCancelled" enumTypeId="LlmToolInvocationStatus" description="Cancelled"/>
+        </seed-data>
+    </entity>
+
+    <entity entity-name="LlmContextProjection" package="moqui.llm" use="transactional" cache="never" sequence-bank-size="100">
+        <description>Authorized searchable projection of readable LLM text. It is never the replay source and excludes
+            encrypted reasoning, file bytes, secrets and opaque payloads.</description>
+        <field name="contextProjectionId" type="id" is-pk="true"/>
+        <field name="userId" type="id" not-null="true"/>
+        <field name="conversationId" type="id"/>
+        <field name="runId" type="id"/>
+        <field name="llmResponseId" type="id"/>
+        <field name="sourceType" type="text-short" not-null="true"/>
+        <field name="sourceId" type="text-medium" not-null="true"/>
+        <field name="textContent" type="text-fts" not-null="true"/>
+        <field name="createdDate" type="date-time" not-null="true"/>
+        <relationship type="one-nofk" related="moqui.security.UserAccount"/>
+        <relationship type="one-nofk" related="moqui.llm.LlmConversation"/>
+        <relationship type="one-nofk" related="moqui.llm.LlmRun"/>
+        <relationship type="one-nofk" related="moqui.llm.LlmResponse"/>
+        <index name="LLMCTX_SRC" unique="true"><index-field name="userId"/><index-field name="sourceType"/><index-field name="sourceId"/></index>
+        <index name="LLMCTX_OWNER_RUN"><index-field name="userId"/><index-field name="runId"/></index>
     </entity>
 
     <entity entity-name="LlmCallLog" package="moqui.llm" use="transactional" cache="never" sequence-bank-size="100">

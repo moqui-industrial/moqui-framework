@@ -58,7 +58,10 @@ class A2ACoreTests extends Specification {
     static final String OTHER_USERNAME = 'a2a.test.other'
     @Shared ExecutionContext ec
 
-    def setupSpec() { ec = Moqui.getExecutionContext() }
+    def setupSpec() {
+        ec = Moqui.getExecutionContext()
+        A2ATestSupport.ensureJohnDoe(ec)
+    }
     def cleanupSpec() { ec.destroy() }
 
     def setup() {

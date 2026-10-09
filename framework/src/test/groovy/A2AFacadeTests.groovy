@@ -43,6 +43,7 @@ class A2AFacadeTests extends Specification {
 
     def setupSpec() {
         ec = Moqui.getExecutionContext()
+        A2ATestSupport.ensureJohnDoe(ec)
         profiles().put(PROFILE, LlmFacadeImpl.ProfileState.forTest(PROFILE, proto, 'fake-model', false, 0, 0f, 0))
         previousProfile = System.getProperty('a2a_default_profile')
         System.setProperty('a2a_default_profile', PROFILE)

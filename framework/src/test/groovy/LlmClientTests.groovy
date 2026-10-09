@@ -24,10 +24,13 @@ import org.moqui.impl.llm.OpenAiCompatProtocol
 import org.moqui.llm.LlmClient
 import org.moqui.llm.LlmException
 import org.moqui.llm.LlmFinishReason
+import org.moqui.llm.LlmContentPart
+import org.moqui.llm.LlmItem
 import org.moqui.llm.LlmMessage
 import org.moqui.llm.LlmProtocol
 import org.moqui.llm.LlmProtocol.ProtocolRequest
 import org.moqui.llm.LlmResponse
+import org.moqui.llm.LlmResponseOptions
 import org.moqui.llm.LlmStreamListener
 import org.moqui.llm.LlmTool
 import org.moqui.llm.LlmToolCall
@@ -644,13 +647,42 @@ class LlmClientTests extends Specification {
         then:
         window[0].role == LlmMessage.Role.SYSTEM
         window[0].content == "sys"
-        // pair is atomic: dropping old-user leaves assistant+tool, never an orphan TOOL
+        // pair is atomic: trimming never leaves an orphan TOOL, and keeps the latest user turn.
         window.find { it.role == LlmMessage.Role.TOOL } != null
         window.find { it.role == LlmMessage.Role.ASSISTANT } != null
         int asstIdx = window.findIndexOf { it.role == LlmMessage.Role.ASSISTANT }
         int toolIdx = window.findIndexOf { it.role == LlmMessage.Role.TOOL }
         toolIdx == asstIdx + 1
-        window.find { it.role == LlmMessage.Role.USER } == null
+        // the task itself is never trimmed away: a window with no user turn has lost the
+        // request, and providers whose chat template requires one reject it with HTTP 400
+        window.find { it.role == LlmMessage.Role.USER } != null
+    }
+
+    def "buildWindow keeps the most recent user turn after a long tool loop"() {
+        given:
+        def conv = LlmConversationImpl.create(null, "default", null)
+        conv.replaceSystem("sys")
+        conv.appendUser("first-task")
+        conv.appendUser("current-task")
+        40.times { int i ->
+            LlmMessage call = LlmMessage.assistant(null)
+            call.toolCalls = [new LlmToolCall("c${i}" as String, "request", "{}")]
+            conv.append(call)
+            conv.appendToolResult("c${i}" as String, "request", "out")
+        }
+        def policy = new WindowPolicy()
+        policy.maxMessages = 10
+        when:
+        def window = conv.buildWindow(policy)
+        def users = window.findAll { it.role == LlmMessage.Role.USER }
+        then:
+        window[0].role == LlmMessage.Role.SYSTEM
+        users.size() == 1
+        users[0].content == "current-task"
+        // the kept user turn comes before the retained tail; the window may exceed the message
+        // budget by exactly one, which is the task, rather than drop an assistant/tool pair
+        window.findIndexOf { it.role == LlmMessage.Role.USER } == 1
+        window.findAll { it.role != LlmMessage.Role.SYSTEM }.size() <= policy.maxMessages + 1
     }
 
     def "call with conversation persists user and assistant and returns Complete"() {
@@ -1356,6 +1388,19 @@ class LlmClientTests extends Specification {
         def b = new LlmClientImpl(null, profile)
         then:
         !a.is(b)
+    }
+
+    def "Responses builders reach the protocol request without extraBody"() {
+        given:
+        def proto = new FakeLlmProtocol()
+        def items = [LlmItem.message("user", [LlmContentPart.inputText("inspect BOM")])]
+        def options = new LlmResponseOptions().put("store", true).put("truncation", "disabled")
+        when:
+        client(proto).inputItems(items).responseOptions(options).previousResponse("resp_1").call()
+        then:
+        proto.lastRequest.inputItems[0].content[0].text == "inspect BOM"
+        proto.lastRequest.responseOptions.get("store") == true
+        proto.lastRequest.previousResponseId == "resp_1"
     }
 
     @IgnoreIf({

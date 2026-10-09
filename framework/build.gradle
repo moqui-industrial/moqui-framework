@@ -214,6 +214,29 @@ test {
     include '**/LlmConversationTests.class'
     include '**/LlmRequestToolTests.class'
     include '**/LlmClientStreamTests.class'
+    include '**/LlmResponsesProtocolTests.class'
+    include '**/OpenResponsesWireFixtureTests.class'
+    include '**/OpenResponsesLimitsTests.class'
+    include '**/OpenResponsesSchemaTests.class'
+    include '**/OpenResponsesCoverageTests.class'
+    include '**/OpenResponsesReplayContractTests.class'
+    include '**/OpenResponsesStreamStateTests.class'
+    include '**/OpenResponsesStreamingContractTests.class'
+    include '**/LlmResponsesClientIntegrationTests.class'
+    include '**/LlmResponsesConversationTests.class'
+    include '**/LlmConversationDeleteTests.class'
+    include '**/LlmConversationRaceTests.class'
+    include '**/LlmConversationWebSocketTests.class'
+    include '**/LlmToolLoopContractTests.class'
+    include '**/LlmGatewayEventsTests.class'
+    include '**/LlmResponsesLiveConversationTests.class'
+    include '**/LlmGatewayOpenResponsesTests.class'
+    include '**/LlmProviderOperationsTests.class'
+    include '**/LlmCompactionTests.class'
+    include '**/LlmBackgroundResponseTests.class'
+    include '**/LlmConversationUpgradeTests.class'
+    include '**/LlmRunStoreTests.class'
+    include '**/LlmCleanupRecoveryConcurrencyTests.class'
     include '**/LlmServletTests.class'
     include '**/TransactionCacheDbTests.class'
     include '**/LlmSkillTests.class'
@@ -227,6 +250,7 @@ test {
     systemProperty 'moqui.runtime', '../runtime'
     systemProperty 'moqui.conf', 'conf/MoquiDevConf.xml'
     systemProperty 'moqui.init.static', 'true'
+    if (System.getProperty('openresponses.coverage.write')) systemProperty 'openresponses.coverage.write', System.getProperty('openresponses.coverage.write')
     // Allow a sidecar H2 + Bitronix journal when the default runtime DB/txlog is locked
     def sidecarUrl = System.getProperty('entity_ds_url') ?: (project.hasProperty('entityDsUrl') ? project.property('entityDsUrl') : null)
     if (sidecarUrl) {
@@ -243,6 +267,312 @@ test {
     beforeTest { descriptor -> logger.lifecycle("Running test: ${descriptor}") }
 }
 
+tasks.register('testLlmResponsesOffline', Test) {
+    group = 'verification'
+    description = 'Runs deterministic offline Open Responses client, protocol and store tests.'
+    useJUnitPlatform()
+    testLogging { events "passed", "skipped", "failed" }
+    testLogging.showStandardStreams = true; testLogging.showExceptions = true
+    maxParallelForks = 1
+    doFirst { delete layout.buildDirectory.dir('openresponses-wire') }
+    dependsOn cleanTest, jar, 'testLlmResponsesProcessRecovery', 'testLlmResponsesUpgradeVerify', 'testLlmConversationRestartVerify'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    include '**/LlmResponsesProtocolTests.class'
+    include '**/OpenResponsesWireFixtureTests.class'
+    include '**/OpenResponsesLimitsTests.class'
+    include '**/OpenResponsesSchemaTests.class'
+    include '**/OpenResponsesCoverageTests.class'
+    include '**/OpenResponsesReplayContractTests.class'
+    include '**/OpenResponsesStreamStateTests.class'
+    include '**/OpenResponsesStreamingContractTests.class'
+    include '**/LlmResponsesClientIntegrationTests.class'
+    include '**/LlmResponsesConversationTests.class'
+    include '**/LlmConversationDeleteTests.class'
+    include '**/LlmConversationRaceTests.class'
+    include '**/LlmConversationWebSocketTests.class'
+    include '**/LlmToolLoopContractTests.class'
+    include '**/LlmGatewayEventsTests.class'
+    include '**/LlmResponsesLiveConversationTests.class'
+    include '**/LlmGatewayOpenResponsesTests.class'
+    include '**/LlmProviderOperationsTests.class'
+    include '**/LlmCompactionTests.class'
+    include '**/LlmBackgroundResponseTests.class'
+    include '**/LlmConversationUpgradeTests.class'
+    include '**/LlmRunStoreTests.class'
+    include '**/LlmCleanupRecoveryConcurrencyTests.class'
+    systemProperty 'moqui.runtime', '../runtime'
+    systemProperty 'moqui.conf', 'conf/MoquiDevConf.xml'
+    systemProperty 'moqui.init.static', 'true'
+    if (System.getProperty('openresponses.coverage.write')) systemProperty 'openresponses.coverage.write', System.getProperty('openresponses.coverage.write')
+    classpath += files(sourceSets.main.output.classesDirs); classpath += files(projectDir.absolutePath)
+    classpath = classpath.filter { it.exists() }
+    beforeTest { descriptor -> logger.lifecycle("Running Open Responses test: ${descriptor}") }
+}
+
+def openResponsesLibraryRequired = project.hasProperty('openResponsesLibraryRequired') && project.property('openResponsesLibraryRequired') == 'true'
+def openResponsesVenvDir = layout.buildDirectory.dir('openresponses-venv').get().asFile
+def openResponsesPython = openResponsesLibraryRequired ? new File(openResponsesVenvDir, 'bin/python').absolutePath : 'python3'
+
+tasks.register('prepareOpenResponsesValidator', Exec) {
+    group = 'verification'
+    description = 'Installs the pinned jsonschema library (tools/openresponses/requirements.txt) in a virtual environment, for the independent check of the schema fixtures. Needs network once.'
+    enabled = openResponsesLibraryRequired
+    inputs.file file('tools/openresponses/requirements.txt')
+    outputs.dir openResponsesVenvDir
+    commandLine 'sh', '-c', "python3 -m venv '${openResponsesVenvDir}' && '${openResponsesVenvDir}/bin/pip' install --quiet -r '${file('tools/openresponses/requirements.txt').absolutePath}'"
+}
+
+tasks.register('testOpenResponsesSchemaFixtures', Exec) {
+    group = 'verification'
+    description = 'Validates Moqui Open Responses contract fixtures against the pinned OpenAPI schema snapshot.'
+    def reportDir = layout.buildDirectory.dir('reports/openresponses-schema')
+    inputs.file file('src/main/resources/org/moqui/impl/llm/openapi-2026-04-24.json')
+    inputs.file file('tools/openresponses/validate-schema-fixtures.py')
+    outputs.file reportDir.map { it.file('openresponses-schema-fixtures.json') }
+    outputs.file reportDir.map { it.file('TEST-openresponses-schema-fixtures.xml') }
+    commandLine openResponsesPython,
+            file('tools/openresponses/validate-schema-fixtures.py').absolutePath,
+            '--schema', file('src/main/resources/org/moqui/impl/llm/openapi-2026-04-24.json').absolutePath,
+            '--json-report', reportDir.get().file('openresponses-schema-fixtures.json').asFile.absolutePath,
+            '--junit-report', reportDir.get().file('TEST-openresponses-schema-fixtures.xml').asFile.absolutePath
+    if (openResponsesLibraryRequired) { dependsOn 'prepareOpenResponsesValidator'; args '--require-library' }
+}
+
+tasks.register('testOpenResponsesWireSchema', Exec) {
+    group = 'verification'
+    description = 'Validates the request bodies the Moqui codec really builds (written by OpenResponsesWireFixtureTests) against the pinned OpenAPI schema, in a separate process.'
+    def wireDir = layout.buildDirectory.dir('openresponses-wire')
+    def reportDir = layout.buildDirectory.dir('reports/openresponses-wire')
+    inputs.file file('src/main/resources/org/moqui/impl/llm/openapi-2026-04-24.json')
+    inputs.file file('tools/openresponses/validate-schema-fixtures.py')
+    outputs.file reportDir.map { it.file('openresponses-wire.json') }
+    commandLine openResponsesPython,
+            file('tools/openresponses/validate-schema-fixtures.py').absolutePath,
+            '--schema', file('src/main/resources/org/moqui/impl/llm/openapi-2026-04-24.json').absolutePath,
+            '--wire-dir', wireDir.get().asFile.absolutePath,
+            '--json-report', reportDir.get().file('openresponses-wire.json').asFile.absolutePath,
+            '--junit-report', reportDir.get().file('TEST-openresponses-wire.xml').asFile.absolutePath
+    if (openResponsesLibraryRequired) { dependsOn 'prepareOpenResponsesValidator'; args '--require-library' }
+    doFirst { reportDir.get().asFile.mkdirs() }
+    outputs.upToDateWhen { false }
+}
+
+tasks.register('testOpenResponsesIndependent') {
+    group = 'verification'
+    description = 'Optional, needs python3 (and with -PopenResponsesLibraryRequired=true the pinned jsonschema library): checks the schema fixtures and the request bodies the codec builds with another implementation of the schema. Run after testLlmResponsesOffline, which writes the bodies. Not part of the default build.'
+    dependsOn 'testOpenResponsesSchemaFixtures', 'testOpenResponsesWireSchema'
+}
+tasks.named('testOpenResponsesWireSchema') { mustRunAfter 'testLlmResponsesOffline' }
+
+tasks.register('testOpenResponsesProviderCompliance', Exec) {
+    group = 'verification'
+    description = 'Runs the pinned official Open Responses provider compliance suite when endpoint credentials are configured.'
+    def reportDir = layout.buildDirectory.dir('reports/openresponses-compliance')
+    inputs.file file('tools/openresponses/compliance-manifest.json')
+    inputs.file file('tools/openresponses/run-compliance.py')
+    outputs.file reportDir.map { it.file('openresponses-compliance.json') }
+    outputs.file reportDir.map { it.file('TEST-openresponses-provider-compliance.xml') }
+    commandLine openResponsesPython,
+            file('tools/openresponses/run-compliance.py').absolutePath,
+            '--manifest', file('tools/openresponses/compliance-manifest.json').absolutePath,
+            '--work-dir', layout.buildDirectory.dir('openresponses-compliance').get().asFile.absolutePath,
+            '--json-report', reportDir.get().file('openresponses-compliance.json').asFile.absolutePath,
+            '--junit-report', reportDir.get().file('TEST-openresponses-provider-compliance.xml').asFile.absolutePath,
+            '--timeout-seconds', (findProperty('openResponsesComplianceTimeoutSeconds') ?: '300').toString()
+    if (findProperty('openResponsesComplianceRequired') == 'true') args '--required'
+    if (findProperty('openResponsesComplianceBaseUrl')) args '--base-url', findProperty('openResponsesComplianceBaseUrl').toString()
+    if (findProperty('openResponsesComplianceModel')) args '--model', findProperty('openResponsesComplianceModel').toString()
+    if (findProperty('openResponsesComplianceFilter')) args '--filter', findProperty('openResponsesComplianceFilter').toString()
+}
+
+def llmRecoveryMarkerFile = layout.buildDirectory.file('tmp/llm-responses-process-recovery/run.json')
+def llmCrashToolLedgerFile = file("${System.getProperty('java.io.tmpdir')}/moqui-llm-responses-crash-tool-${project.name}.json")
+
+tasks.register('testLlmResponsesRecoverySeed', Test) {
+    group = 'verification'
+    description = 'Seeds an Open Responses recoverable run in a separate JVM.'
+    useJUnitPlatform()
+    testLogging { events "passed", "skipped", "failed" }
+    maxParallelForks = 1
+    dependsOn jar
+    mustRunAfter 'testOpenResponsesSchemaFixtures'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    include '**/LlmRecoveryProcessSeedTests.class'
+    systemProperty 'moqui.runtime', '../runtime'
+    systemProperty 'moqui.conf', 'conf/MoquiDevConf.xml'
+    systemProperty 'moqui.init.static', 'true'
+    systemProperty 'llm.recovery.marker', llmRecoveryMarkerFile.get().asFile.absolutePath
+    outputs.file llmRecoveryMarkerFile
+    classpath += files(sourceSets.main.output.classesDirs); classpath += files(projectDir.absolutePath)
+    classpath = classpath.filter { it.exists() }
+}
+
+tasks.register('testLlmResponsesRecoveryRecover', Test) {
+    group = 'verification'
+    description = 'Recovers an Open Responses run seeded by a previous JVM.'
+    useJUnitPlatform()
+    testLogging { events "passed", "skipped", "failed" }
+    maxParallelForks = 1
+    dependsOn 'testLlmResponsesRecoverySeed'
+    mustRunAfter 'testLlmResponsesRecoverySeed', 'testOpenResponsesSchemaFixtures'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    include '**/LlmRecoveryProcessRecoverTests.class'
+    systemProperty 'moqui.runtime', '../runtime'
+    systemProperty 'moqui.conf', 'conf/MoquiDevConf.xml'
+    systemProperty 'moqui.init.static', 'true'
+    systemProperty 'llm.recovery.marker', llmRecoveryMarkerFile.get().asFile.absolutePath
+    inputs.file llmRecoveryMarkerFile
+    classpath += files(sourceSets.main.output.classesDirs); classpath += files(projectDir.absolutePath)
+    classpath = classpath.filter { it.exists() }
+}
+
+def llmRestartMarkerFile = layout.buildDirectory.file('tmp/llm-conversation-restart/marker.json')
+
+tasks.register('testLlmConversationRestartSeed', Test) {
+    group = 'verification'
+    description = 'Stores the first turn of an Open Responses conversation in a separate JVM.'
+    useJUnitPlatform()
+    testLogging { events "passed", "skipped", "failed" }
+    maxParallelForks = 1
+    dependsOn jar
+    mustRunAfter 'testOpenResponsesSchemaFixtures', 'testLlmResponsesRecoveryRecover'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    include '**/LlmConversationRestartSeedTests.class'
+    systemProperty 'moqui.runtime', '../runtime'
+    systemProperty 'moqui.conf', 'conf/MoquiDevConf.xml'
+    systemProperty 'moqui.init.static', 'true'
+    systemProperty 'llm.restart.marker', llmRestartMarkerFile.get().asFile.absolutePath
+    outputs.file llmRestartMarkerFile
+    outputs.upToDateWhen { false }
+    classpath += files(sourceSets.main.output.classesDirs); classpath += files(projectDir.absolutePath)
+    classpath = classpath.filter { it.exists() }
+}
+
+tasks.register('testLlmConversationRestartVerify', Test) {
+    group = 'verification'
+    description = 'Continues the conversation stored by a previous JVM.'
+    useJUnitPlatform()
+    testLogging { events "passed", "skipped", "failed" }
+    maxParallelForks = 1
+    dependsOn 'testLlmConversationRestartSeed'
+    mustRunAfter 'testLlmConversationRestartSeed'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    include '**/LlmConversationRestartVerifyTests.class'
+    systemProperty 'moqui.runtime', '../runtime'
+    systemProperty 'moqui.conf', 'conf/MoquiDevConf.xml'
+    systemProperty 'moqui.init.static', 'true'
+    systemProperty 'llm.restart.marker', llmRestartMarkerFile.get().asFile.absolutePath
+    inputs.file llmRestartMarkerFile
+    outputs.upToDateWhen { false }
+    classpath += files(sourceSets.main.output.classesDirs); classpath += files(projectDir.absolutePath)
+    classpath = classpath.filter { it.exists() }
+}
+
+def llmUpgradeMarkerFile = layout.buildDirectory.file('tmp/llm-responses-upgrade/marker.json')
+
+tasks.register('testLlmResponsesUpgradeSeed', Test) {
+    mustRunAfter 'testLlmConversationRestartSeed', 'testLlmConversationRestartVerify'
+    group = 'verification'
+    description = 'Stores Open Responses data in the layout of an installation from before the options and usage were kept apart, and gives the database its old shape, in a separate JVM.'
+    useJUnitPlatform()
+    testLogging { events "passed", "skipped", "failed" }
+    maxParallelForks = 1
+    dependsOn jar
+    mustRunAfter 'testOpenResponsesSchemaFixtures', 'test', 'testLlmResponsesRecoverySeed', 'testLlmResponsesRecoveryRecover',
+            'testLlmResponsesCrashToolChild', 'testLlmResponsesCrashToolRecover'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    include '**/LlmUpgradeSeedTests.class'
+    systemProperty 'moqui.runtime', '../runtime'
+    systemProperty 'moqui.conf', 'conf/MoquiDevConf.xml'
+    systemProperty 'moqui.init.static', 'true'
+    systemProperty 'llm.upgrade.marker', llmUpgradeMarkerFile.get().asFile.absolutePath
+    outputs.file llmUpgradeMarkerFile
+    outputs.upToDateWhen { false }
+    classpath += files(sourceSets.main.output.classesDirs); classpath += files(projectDir.absolutePath)
+    classpath = classpath.filter { it.exists() }
+}
+
+tasks.register('testLlmResponsesUpgradeVerify', Test) {
+    mustRunAfter 'testLlmConversationRestartSeed', 'testLlmConversationRestartVerify'
+    group = 'verification'
+    description = 'Starts the current code on the old-shaped database from testLlmResponsesUpgradeSeed and checks the non-destructive upgrade, twice.'
+    useJUnitPlatform()
+    testLogging { events "passed", "skipped", "failed" }
+    maxParallelForks = 1
+    dependsOn 'testLlmResponsesUpgradeSeed'
+    mustRunAfter 'testLlmResponsesUpgradeSeed'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    include '**/LlmUpgradeVerifyTests.class'
+    systemProperty 'moqui.runtime', '../runtime'
+    systemProperty 'moqui.conf', 'conf/MoquiDevConf.xml'
+    systemProperty 'moqui.init.static', 'true'
+    systemProperty 'llm.upgrade.marker', llmUpgradeMarkerFile.get().asFile.absolutePath
+    inputs.file llmUpgradeMarkerFile
+    outputs.upToDateWhen { false }
+    classpath += files(sourceSets.main.output.classesDirs); classpath += files(projectDir.absolutePath)
+    classpath = classpath.filter { it.exists() }
+}
+
+tasks.register('testLlmResponsesProcessRecovery') {
+    group = 'verification'
+    description = 'Runs Open Responses process recovery checks, including a controlled external-tool crash.'
+    dependsOn 'testLlmResponsesRecoveryRecover', 'testLlmResponsesCrashToolRecover'
+}
+
+tasks.register('testLlmResponsesCrashToolChild', JavaExec) {
+    mustRunAfter 'testLlmConversationRestartSeed', 'testLlmConversationRestartVerify'
+    group = 'verification'
+    description = 'Runs a child JVM that crashes after an external tool ledger write.'
+    dependsOn testClasses, jar
+    classpath = sourceSets.test.runtimeClasspath + files(sourceSets.main.output.classesDirs) + files(projectDir.absolutePath)
+    mainClass = 'org.moqui.impl.llm.LlmCrashChild'
+    args 'fake', llmCrashToolLedgerFile.absolutePath
+    systemProperty 'moqui.runtime', '../runtime'
+    systemProperty 'moqui.conf', 'conf/MoquiDevConf.xml'
+    systemProperty 'moqui.init.static', 'true'
+    ignoreExitValue = true
+    outputs.file llmCrashToolLedgerFile
+    mustRunAfter 'test', 'testLlmResponsesRecoveryRecover', 'testLlmResponsesRecoverySeed'
+    doFirst {
+        llmCrashToolLedgerFile.parentFile.mkdirs()
+        llmCrashToolLedgerFile.delete()
+    }
+    doLast {
+        def exitValue = executionResult.get().exitValue
+        if (exitValue != 77) throw new GradleException("Expected LlmCrashChild exit 77, got ${exitValue}")
+        if (!llmCrashToolLedgerFile.exists())
+            throw new GradleException("Expected crash ledger ${llmCrashToolLedgerFile}")
+    }
+}
+
+tasks.register('testLlmResponsesCrashToolRecover', Test) {
+    mustRunAfter 'testLlmConversationRestartSeed', 'testLlmConversationRestartVerify'
+    group = 'verification'
+    description = 'Recovers a run whose tool worker crashed after an external effect.'
+    useJUnitPlatform()
+    testLogging { events "passed", "skipped", "failed" }
+    maxParallelForks = 1
+    dependsOn 'testLlmResponsesCrashToolChild'
+    mustRunAfter 'testLlmResponsesCrashToolChild', 'testLlmResponsesRecoveryRecover', 'testOpenResponsesSchemaFixtures'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    include '**/LlmCrashToolRecoverTests.class'
+    systemProperty 'moqui.runtime', '../runtime'
+    systemProperty 'moqui.conf', 'conf/MoquiDevConf.xml'
+    systemProperty 'moqui.init.static', 'true'
+    systemProperty 'llm.crash.ledger', llmCrashToolLedgerFile.absolutePath
+    inputs.file llmCrashToolLedgerFile
+    classpath += files(sourceSets.main.output.classesDirs); classpath += files(projectDir.absolutePath)
+    classpath = classpath.filter { it.exists() }
+}
+
 jar {
     // this is necessary otherwise jar won't build when war plugin is applied
     enabled = true
@@ -255,6 +585,8 @@ jar {
 
 tasks.test {
     inputs.files(tasks.jar)
+    mustRunAfter tasks.named('testOpenResponsesProviderCompliance'), tasks.named('testOpenResponsesSchemaFixtures')
+    mustRunAfter tasks.named('testLlmResponsesRecoverySeed'), tasks.named('testLlmResponsesRecoveryRecover')
 }
 
 war {

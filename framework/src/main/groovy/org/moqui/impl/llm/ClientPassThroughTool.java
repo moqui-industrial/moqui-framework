@@ -25,8 +25,14 @@ public class ClientPassThroughTool implements LlmTool {
     private final String name;
     private final String description;
     private final Map<String, Object> schema;
+    private final Boolean strict;
 
     public ClientPassThroughTool(String name, String description, Map<String, Object> jsonSchema) {
+        this(name, description, jsonSchema, null);
+    }
+
+    public ClientPassThroughTool(String name, String description, Map<String, Object> jsonSchema, Boolean strict) {
+        this.strict = strict;
         if (name == null || name.isBlank()) throw new IllegalArgumentException("client tool name is required");
         this.name = name;
         this.description = description != null ? description : name;
@@ -37,6 +43,7 @@ public class ClientPassThroughTool implements LlmTool {
     @Override public String getDescription() { return description; }
     @Override public Map<String, Object> getParametersSchema() { return schema; }
     @Override public Execution getExecution() { return Execution.CLIENT; }
+    @Override public Boolean getStrict() { return strict; }
 
     @Override
     public Object execute(Map<String, Object> arguments, ExecutionContext ec) {

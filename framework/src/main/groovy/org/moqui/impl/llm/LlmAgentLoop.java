@@ -20,6 +20,7 @@ import org.moqui.entity.EntityValue;
 import org.moqui.impl.context.ExecutionContextImpl;
 import org.moqui.llm.LlmException;
 import org.moqui.llm.LlmFinishReason;
+import org.moqui.llm.LlmItem;
 import org.moqui.llm.LlmMessage;
 import org.moqui.llm.LlmProtocol.ProtocolRequest;
 import org.moqui.llm.LlmProtocol.ProtocolResult;
@@ -76,12 +77,14 @@ final class LlmAgentLoop {
             });
             client.markStreamingPersisted();
             if (listener != null) listener.onConversation(client.conversation.getConversationId());
-            flushResumeEmits();
         } else {
             working = client.buildWindow();
             applyResumeResults(working);
-            flushResumeEmits();
         }
+        List<LlmMessage> initialWindow = client.conversation != null ? client.buildWindow() : working;
+        client.beginDurableRun(initialWindow, resume);
+        checkpointResumeResults();
+        flushResumeEmits();
 
         List<LlmToolResult> roundResults = new ArrayList<>();
         int emptyAttempts = 0;
@@ -111,8 +114,16 @@ final class LlmAgentLoop {
                 throw new LlmException("LLM protocol returned no result",
                         null, LlmFinishReason.ERROR, 0, client.profile.name, client.convId());
             }
+            result.runId = client.activeRunId;
+            result.runFence = client.activeRunFence;
             LlmFinishReason fr = result.finishReason != null ? result.finishReason : LlmFinishReason.ERROR;
 
+            if (fr == LlmFinishReason.PENDING) {
+                // the provider has not finished: no tool is run from a partial answer and no second request is made
+                LlmResponse parked = client.parkPending(req, result, start, iteration + 1);
+                if (listener != null) listener.onComplete(parked);
+                return parked;
+            }
             if (fr == LlmFinishReason.CONTENT_FILTER) {
                 throw new LlmException(nvl(result.errorMessage, "LLM content filter"),
                         null, LlmFinishReason.CONTENT_FILTER, result.httpStatus, client.profile.name, client.convId());
@@ -162,10 +173,13 @@ final class LlmAgentLoop {
                 });
             } else if (working != null) {
                 working.add(asst);
+                client.persistDetachedResponse(window, result, start, iteration, false);
             }
+            client.recordRunResponse(result, iteration);
 
             if (!hasCalls || fr == LlmFinishReason.STOP || fr == LlmFinishReason.LENGTH) {
                 completeConversation();
+                client.finishDurableRun(LlmRunStore.COMPLETE, null);
                 client.throwIfCancelled();
                 LlmResponse r = client.toResponse(result, fr, start);
                 r.toolResults = roundResults;
@@ -193,6 +207,7 @@ final class LlmAgentLoop {
             for (int serverIndex = 0; serverIndex < serverCalls.size(); serverIndex++) {
                 LlmToolCall call = serverCalls.get(serverIndex);
                 client.throwIfCancelled();
+                Map<String, Object> invocation = client.planRunTool(call, result);
                 SkillRiskGate.Decision decision = SkillRiskGate.decide(client, call);
                 if (decision.action == SkillRiskGate.Decision.YIELD) {
                     for (int rest = serverIndex + 1; rest < serverCalls.size(); rest++)
@@ -210,7 +225,7 @@ final class LlmAgentLoop {
                 if (listener != null) listener.onToolCall(call, LlmTool.Execution.SERVER);
                 Object executed = decision.action == SkillRiskGate.Decision.REFUSE
                         ? decision.refusal : executeOne(call, false);
-                recordServerResult(working, roundResults, call, executed);
+                recordServerResult(working, roundResults, call, executed, invocation, iteration);
             }
 
             if (!clientCalls.isEmpty()) {
@@ -283,7 +298,10 @@ final class LlmAgentLoop {
                     pending.add(copy);
                 }
                 if (pending.isEmpty()) continue;
-                for (LlmToolCall copy : pending) LlmTrace.logToolCall(copy.name, copy.arguments);
+                for (LlmToolCall copy : pending) {
+                    client.planRunTool(copy, result);
+                    LlmTrace.logToolCall(copy.name, copy.arguments);
+                }
                 return yieldPending(result, start, roundResults, pending);
             }
         }
@@ -300,19 +318,29 @@ final class LlmAgentLoop {
 
     private ProtocolResult invokeProtocol(ProtocolRequest req) {
         if (listener != null) req.stream = true;
+        client.persistOpenResponsesRequest(req, client.resolveModel());
         LlmTrace.logRequest(client, req);
         long t0 = System.currentTimeMillis();
         ProtocolResult result = null;
         try {
             if (listener == null) {
+                client.markProviderInFlight();
                 result = client.profile.protocol.chat(req);
+                if (result != null) result.localRequestId = req.localRequestId;
+                client.settleOpenResponsesRequest(req, result);
                 return result;
             }
             ProtocolResult[] box = new ProtocolResult[1];
             Throwable[] fail = new Throwable[1];
+            LlmStreamJournal journal = client.openJournal(req, client.resolveModel());
             client.bindUpstreamOpen(req, listener);
             try {
+                client.markProviderInFlight();
                 client.profile.protocol.chatStream(req, new ProtocolStreamListener() {
+                    @Override public void onEvent(org.moqui.llm.LlmResponseEvent event) {
+                        if (journal != null) journal.onEvent(event);
+                        listener.onEvent(event);
+                    }
                     @Override public void onDelta(String textDelta) {
                         if (textDelta != null && !textDelta.isEmpty()) listener.onDelta(textDelta);
                     }
@@ -330,7 +358,16 @@ final class LlmAgentLoop {
                         LlmFinishReason.ERROR, 0, client.profile.name, client.convId());
             }
             result = box[0];
+            if (result != null) {
+                result.localRequestId = req.localRequestId;
+                result.localStreamResponseId = req.localStreamResponseId;
+                result.streamEventsPersisted = req.streamEventsPersisted;
+            }
+            client.settleOpenResponsesRequest(req, result);
             return result;
+        } catch (RuntimeException t) {
+            client.markOpenResponsesRequestFailure(req, t);
+            throw t;
         } finally {
             LlmTrace.logResponse(client, result, System.currentTimeMillis() - t0);
         }
@@ -355,10 +392,16 @@ final class LlmAgentLoop {
 
     private void recordServerResult(List<LlmMessage> working, List<LlmToolResult> roundResults,
             LlmToolCall call, Object executed) {
+        recordServerResult(working, roundResults, call, executed, null, 0);
+    }
+
+    private void recordServerResult(List<LlmMessage> working, List<LlmToolResult> roundResults,
+            LlmToolCall call, Object executed, Map<String, Object> invocation, int iteration) {
         client.throwIfCancelled();
         Object stored = client.truncateResult(executed);
         roundResults.add(new LlmToolResult(call.id, call.name, stored));
         appendTool(working, call.id, call.name, stored);
+        client.recordRunToolResult(invocation, call, stored, iteration);
         noteSkillLifecycle(call.name, call.arguments, stored);
         LlmTrace.logToolResult(call.name, stored);
         if (listener != null) listener.onToolResult(call, stored, LlmTool.Execution.SERVER);
@@ -381,6 +424,8 @@ final class LlmAgentLoop {
             });
             client.throwIfCancelled();
         }
+        client.finishDurableRun(pending.size() == 1 && Boolean.TRUE.equals(pending.get(0).confirm)
+                ? LlmRunStore.WAIT_CONFIRM : LlmRunStore.WAIT_CLIENT, "Waiting for tool result");
         LlmResponse r = client.toResponse(result, LlmFinishReason.TOOL_CALLS, start);
         r.yielded = true;
         r.httpStatus = 202;
@@ -416,6 +461,8 @@ final class LlmAgentLoop {
         }
         LlmTool tool = client.findTool(call.name);
         if (tool == null) return errorMap(UNKNOWN_TOOL + call.name);
+        String notChosen = refusedByToolChoice(client.requestedToolChoice(), call.name);
+        if (notChosen != null) return errorMap(notChosen);
         Map<String, Object> args = LlmJson.tryToMap(call.arguments);
         if (args == null) return errorMap(MALFORMED + call.arguments);
         LlmClientImpl prev = CURRENT_CLIENT.get();
@@ -445,6 +492,26 @@ final class LlmAgentLoop {
             if (prev != null) CURRENT_CLIENT.set(prev);
             else CURRENT_CLIENT.remove();
         }
+    }
+
+    /**
+     * The provider is not the barrier between a model and a tool: a call to a tool the request's own tool_choice does not
+     * allow is refused here, whatever the provider sent. Null when the call is allowed.
+     */
+    static String refusedByToolChoice(Object choice, String toolName) {
+        if (choice == null) return null;
+        if ("none".equals(choice)) return "tool_choice is none: " + toolName + " is not run";
+        if (!(choice instanceof Map)) return null;
+        Map<?, ?> map = (Map<?, ?>) choice;
+        if ("function".equals(map.get("type")) && map.get("name") instanceof String && !map.get("name").equals(toolName))
+            return "tool_choice names " + map.get("name") + ": " + toolName + " is not run";
+        if ("allowed_tools".equals(map.get("type")) && map.get("tools") instanceof List) {
+            for (Object allowed : (List<?>) map.get("tools"))
+                if (allowed instanceof Map && "function".equals(((Map<?, ?>) allowed).get("type"))
+                        && toolName.equals(((Map<?, ?>) allowed).get("name"))) return null;
+            return "tool_choice allows other tools: " + toolName + " is not run";
+        }
+        return null;
     }
 
     /** Close a transaction the tool left open. A failure rolls it back. A success commits it. */
@@ -538,6 +605,17 @@ final class LlmAgentLoop {
             if (listener != null) listener.onToolResult(e.call, e.content, LlmTool.Execution.CLIENT);
         }
         resumeEmits = null;
+    }
+
+    private void checkpointResumeResults() {
+        if (resumeEmits == null) return;
+        for (ResumeEmit emit : resumeEmits) {
+            if (emit == null || emit.call == null) continue;
+            Map<String, Object> invocation = client.planRunTool(emit.call, null);
+            if (invocation != null && ("LlmTiComplete".equals(invocation.get("statusId"))
+                    || "LlmTiFailed".equals(invocation.get("statusId")))) continue;
+            client.recordRunToolResult(invocation, emit.call, emit.content, 0);
+        }
     }
 
     private static final class ResumeEmit {
