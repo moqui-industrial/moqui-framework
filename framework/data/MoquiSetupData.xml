@@ -63,6 +63,18 @@ along with this software (see the LICENSE.md file). If not, see
             serviceName="org.moqui.impl.ServiceServices.clean#ServiceJobRun" cronExpression="0 0 2 * * ?" paused="N">
         <parameters parameterName="daysToKeep" parameterValue="30"/>
     </moqui.service.job.ServiceJob>
+    <moqui.service.job.ServiceJob jobName="recover_AllLlmRuns_frequent" description="Recover expired durable LLM runs"
+            serviceName="org.moqui.impl.LlmServices.recover#AllLlmRuns" cronExpression="0 0/2 * * * ?" paused="N">
+        <parameters parameterName="workerId" parameterValue="scheduled-recovery"/>
+        <parameters parameterName="leaseSeconds" parameterValue="60"/>
+        <parameters parameterName="limit" parameterValue="50"/>
+    </moqui.service.job.ServiceJob>
+    <moqui.service.job.ServiceJob jobName="poll_AllLlmBackgroundResponses" description="Complete LLM runs that wait for a provider to finish a background response"
+            serviceName="org.moqui.impl.LlmServices.poll#AllLlmBackgroundResponses" cronExpression="0 * * * * ?" paused="N">
+        <parameters parameterName="workerId" parameterValue="scheduled-background-poll"/>
+        <parameters parameterName="leaseSeconds" parameterValue="60"/>
+        <parameters parameterName="limit" parameterValue="50"/>
+    </moqui.service.job.ServiceJob>
 
     <!-- Change paused to 'N' to run the EntitySync job -->
     <moqui.service.job.ServiceJob jobName="run_EntitySyncAll_frequent" description="Run All EntitySync"

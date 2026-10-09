@@ -599,6 +599,7 @@
         <load-entity location="classpath://entity/Screen.eecas.xml"/>
         <load-entity location="classpath://entity/SecurityEntities.xml"/>
         <load-entity location="classpath://entity/Security.eecas.xml"/>
+        <load-entity location="classpath://entity/Llm.eecas.xml"/>
         <load-entity location="classpath://entity/ServerEntities.xml"/>
         <load-entity location="classpath://entity/ServiceEntities.xml"/>
         <load-entity location="classpath://entity/TestEntities.xml"/>

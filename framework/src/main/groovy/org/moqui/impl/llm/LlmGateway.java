@@ -612,6 +612,11 @@ public final class LlmGateway {
     /** 409 while Streaming. Otherwise delete the conversation and its messages, call logs, and skill uses. */
     public static Map<String, Object> deleteConversation(ExecutionContext ec, String conversationId) {
         requireLlmGateway(ec);
+        return deleteConversationOf(ec, conversationId);
+    }
+
+    /** The delete itself, for the owner or an administrator; the permission to use the gateway is the caller's to check. */
+    static Map<String, Object> deleteConversationOf(ExecutionContext ec, String conversationId) {
         LlmConversationImpl conv = LlmConversationImpl.load(ec, conversationId, true);
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("conversationId", conv.getConversationId());
@@ -621,7 +626,15 @@ public final class LlmGateway {
             out.put("message", "Conversation is streaming");
             return out;
         }
-        conv.deleteStored();
+        try {
+            conv.deleteStored();
+        } catch (LlmException e) {
+            if (e.getHttpStatus() != 409) throw e;
+            out.put("httpStatus", 409);
+            out.put("deleted", Boolean.FALSE);
+            out.put("message", e.getMessage());
+            return out;
+        }
         out.put("httpStatus", 200);
         out.put("deleted", Boolean.TRUE);
         return out;
@@ -678,16 +691,17 @@ public final class LlmGateway {
                 changed = true;
             }
             String id = ev.getString("conversationId");
+            // a conversation of the item model has no message rows to backfill from: its header is the source
+            boolean itemModel = LlmConversationImpl.isItemModel(ev.getString("messageModel"));
             if (ev.getTimestamp("createdDate") == null) {
-                java.sql.Timestamp started = earliestMessageDate(ec, id);
+                java.sql.Timestamp started = itemModel ? null : LlmMessageStore.earliestSentDate(ec, id);
                 if (started == null) started = ev.getTimestamp("lastMessageDate");
                 if (started != null) {
                     ev.set("createdDate", started);
                     changed = true;
                 }
             }
-            org.moqui.entity.EntityValue userMsg = firstUserMessage(ec, id);
-            String text = userMsg != null ? userMsg.getString("content") : null;
+            String text = itemModel ? null : LlmMessageStore.firstUserContent(ec, id);
             String summary;
             if (text != null && !text.isBlank()) summary = ConversationSummary.truncate(text);
             else if (ev.getString("title") != null && !ev.getString("title").isBlank())
@@ -700,23 +714,6 @@ public final class LlmGateway {
             if (changed) ev.update();
         }
         });
-    }
-
-    private static java.sql.Timestamp earliestMessageDate(ExecutionContext ec, String conversationId) {
-        if (conversationId == null) return null;
-        org.moqui.entity.EntityList list = ec.getEntity().find("moqui.llm.LlmMessage")
-                .condition("conversationId", conversationId).orderBy("sentDate").limit(1).list();
-        if (list == null || list.isEmpty()) return null;
-        return list.get(0).getTimestamp("sentDate");
-    }
-
-    private static org.moqui.entity.EntityValue firstUserMessage(ExecutionContext ec, String conversationId) {
-        if (conversationId == null) return null;
-        org.moqui.entity.EntityList list = ec.getEntity().find("moqui.llm.LlmMessage")
-                .condition("conversationId", conversationId).condition("role", "USER")
-                .orderBy("ordinal").limit(1).list();
-        if (list == null || list.isEmpty()) return null;
-        return list.get(0);
     }
 
     private static String searchTerm(String search) {

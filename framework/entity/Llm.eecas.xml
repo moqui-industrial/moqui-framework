@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<eecas xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/entity-eca-3.xsd">
+    <!-- An item is owned by exactly one request or one response, whoever writes it, and only a request-owned item can
+         point at the response item it replays. -->
+    <eeca id="LlmItemOwner" entity="moqui.llm.LlmItem" on-create="true" on-update="true" run-before="true">
+        <actions><script><![CDATA[
+            def requestOwner = entityValue.llmRequestId
+            def responseOwner = entityValue.llmResponseId
+            if ((requestOwner == null) == (responseOwner == null))
+                throw new org.moqui.entity.EntityException("An LLM item belongs to exactly one request or one response")
+            if (responseOwner != null && entityValue.sourceLlmItemId != null)
+                throw new org.moqui.entity.EntityException("Only a request item can point to the response item it replays")
+        ]]></script></actions>
+    </eeca>
+</eecas>

@@ -362,6 +362,21 @@ class LlmResponsesProtocolTests extends Specification {
         error.message.contains("requires model")
     }
 
+    def "LlmClient exposes standard compaction through the configured protocol"() {
+        given:
+        def protocol = new CompactProtocol()
+        def profile = LlmFacadeImpl.ProfileState.forTest("responses", protocol, "gpt-test", false, 0, 0f, 0)
+        def client = new LlmClientImpl(null, profile, { false })
+        def input = [LlmItem.message("user", [LlmContentPart.inputText("compact this")])]
+        when:
+        def result = client.inputItems(input).responseOptions(new LlmResponseOptions()
+                .put("instructions", "retain decisions")).compact()
+        then:
+        result.id == "cmp_client"
+        protocol.lastRequest.model == "gpt-test"
+        protocol.lastRequest.inputItems[0].content[0].text == "compact this"
+        protocol.lastRequest.responseOptions.get("instructions") == "retain decisions"
+    }
 
     def "WebSocket request uses standard flat response create framing"() {
         given:

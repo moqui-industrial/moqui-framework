@@ -184,6 +184,17 @@ class OpenResponsesSchemaTests extends Specification {
         wireTool(true, tree).strict == true
     }
 
+    def 'strict survives the stored description of a tool'() {
+        given:
+        LlmTool tool = LlmTool.client('lookup', 'Lookup', CLOSED, true)
+        when:
+        Map descriptor = org.moqui.impl.llm.LlmToolDescriptors.describe(tool)
+        LlmTool rebuilt = org.moqui.impl.llm.LlmToolDescriptors.rebuild(descriptor)
+        then:
+        descriptor.strict == true
+        rebuilt.strict == true
+        rebuilt.parametersSchema == CLOSED
+    }
 
     def 'a tool choice must name tools the request carries'() {
         given:
