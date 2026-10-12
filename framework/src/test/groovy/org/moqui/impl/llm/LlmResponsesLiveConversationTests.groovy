@@ -17,6 +17,20 @@ import spock.lang.IgnoreIf
 class LlmResponsesLiveConversationTests extends LlmConversationSpecBase {
     private static final String PROFILE = 'openai-responses'
 
+    /**
+     * With {@code llm_live_standard_url} set, the profile is the strict protocol (not the OpenAI adapter) against that endpoint, with
+     * the key of {@code llm_openai_api_key} and the model {@code llm_live_standard_model}: any endpoint that implements the standard.
+     */
+    def setup() {
+        String url = System.getenv('llm_live_standard_url')
+        if (!url) return
+        register(new LlmFacadeImpl.ProfileState(PROFILE, null, url, '/v1/responses', url + '/v1/responses',
+                System.getenv('llm_openai_api_key'), 'Authorization', null, System.getenv('llm_live_standard_model') ?: 'gpt-5',
+                'max_tokens', false, 120, 0f, 0, false, 0, org.moqui.llm.WindowPolicy.ContextLimitPolicy.FAIL, null, null, false,
+                Collections.emptyMap(), Collections.emptyMap(), null, new OpenResponsesProtocol(), Collections.emptySet(),
+                Collections.emptyList(), false, 15, null, true, false, false, false, false, false, false, Collections.emptyList()))
+    }
+
     private LlmResponse liveTurn(String conversationId, Closure config, LlmTransport transport = LlmTransport.HTTP, boolean stream = false) {
         LlmClientImpl client = (LlmClientImpl) ec.llm.getClient(PROFILE)
         client.conversation(conversationId)

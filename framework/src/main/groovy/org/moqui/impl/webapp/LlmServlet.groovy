@@ -19,11 +19,14 @@ import org.moqui.context.ArtifactTarpitException
 import org.moqui.impl.context.ExecutionContextFactoryImpl
 import org.moqui.impl.context.ExecutionContextImpl
 import org.moqui.impl.context.WebFacadeImpl
+import org.moqui.impl.llm.GatewayEvents
+import org.moqui.impl.llm.GatewayInput
 import org.moqui.impl.llm.LlmClientImpl
 import org.moqui.impl.llm.LlmFacadeImpl
 import org.moqui.impl.llm.LlmGateway
 import org.moqui.llm.LlmException
 import org.moqui.llm.LlmResponse
+import org.moqui.llm.LlmResponseEvent
 import org.moqui.llm.LlmStreamListener
 import org.moqui.llm.LlmTool
 import org.moqui.llm.LlmToolCall
@@ -148,6 +151,13 @@ class LlmServlet extends HttpServlet {
                             ((Number) deleted.get("httpStatus")).intValue() : 200
                     sendJson(response, dst, deleted)
                     return
+                case LlmGateway.Route.Op.GET_ATTACHMENT:
+                    Object[] attachment = LlmGateway.getAttachment(ec, route.conversationId, route.attachmentIndex)
+                    sendAttachment(response, (byte[]) attachment[0], (String) attachment[1], (String) attachment[2])
+                    return
+                case LlmGateway.Route.Op.COMPACT:
+                    sendJson(response, 200, LlmGateway.compact(ec, route.conversationId))
+                    return
                 case LlmGateway.Route.Op.CANCEL:
                     Map<String, Object> cancelled = LlmGateway.cancel(ec, route.conversationId)
                     int cst = cancelled.get("httpStatus") instanceof Number ?
@@ -180,21 +190,25 @@ class LlmServlet extends HttpServlet {
 
     private static void handleTurn(ExecutionContextImpl ec, HttpServletRequest request, HttpServletResponse response,
             Map<String, Object> body, boolean resume) throws IOException {
+        boolean structured = GatewayEvents.negotiate(body.get("events"))
         LlmClientImpl client = LlmGateway.prepareClient(ec, body, resume)
         String convId = client.convId()
         if (convId) MDC.put("moqui_llm_conversationId", convId)
         boolean stream = LlmGateway.wantsStream(body, request.getHeader("Accept"))
         if (!stream) {
             LlmResponse r = client.call()
-            sendJson(response, LlmGateway.jsonStatus(r), LlmGateway.responseToMap(r))
+            Map<String, Object> answer = LlmGateway.responseToMap(r)
+            Map<String, Object> structuredAnswer = GatewayInput.structuredOutput(client, r)
+            if (structuredAnswer != null) answer.put("structuredOutput", structuredAnswer)
+            sendJson(response, LlmGateway.jsonStatus(r), answer)
             return
         }
-        pumpSse(ec, response, client)
+        pumpSse(ec, response, client, structured)
     }
 
     /** Request-thread SSE pump. Yield still finishes this HTTP response; resume is a new POST. */
-    private static void pumpSse(ExecutionContextImpl ec, HttpServletResponse response, LlmClientImpl client)
-            throws IOException {
+    private static void pumpSse(ExecutionContextImpl ec, HttpServletResponse response, LlmClientImpl client,
+            boolean structured = false) throws IOException {
         response.setStatus(200)
         response.setContentType("text/event-stream; charset=UTF-8")
         response.setHeader("Cache-Control", "no-cache, no-store")
@@ -215,7 +229,7 @@ class LlmServlet extends HttpServlet {
                 }
             }, period, period, TimeUnit.SECONDS)
         }
-        ServletStreamListener listener = new ServletStreamListener(sink, client)
+        ServletStreamListener listener = new ServletStreamListener(sink, client, structured)
         try {
             client.stream(listener)
         } catch (Throwable t) {
@@ -233,6 +247,21 @@ class LlmServlet extends HttpServlet {
             if (pingTask != null) pingTask.cancel(false)
             sink.close()
         }
+    }
+
+    /** An attachment is shown inline only if it is an image type; the browser is told not to guess and not to run anything in it. */
+    private static void sendAttachment(HttpServletResponse response, byte[] bytes, String mediaType, String filename) {
+        boolean inline = mediaType != null && LlmGateway.INLINE_TYPES.contains(mediaType)
+        response.setStatus(200)
+        response.setContentType(inline ? mediaType : "application/octet-stream")
+        response.setHeader("X-Content-Type-Options", "nosniff")
+        response.setHeader("Content-Security-Policy", "default-src 'none'; sandbox")
+        response.setHeader("Cache-Control", "private, no-store")
+        String safeName = filename != null ? filename.replaceAll('[^A-Za-z0-9._-]', '_') : "attachment"
+        response.setHeader("Content-Disposition", (inline ? "inline" : "attachment") + "; filename=\"" + safeName + "\"")
+        response.setContentLength(bytes.length)
+        response.getOutputStream().write(bytes)
+        response.getOutputStream().flush()
     }
 
     private static void sendJson(HttpServletResponse response, int status, Object body) {
@@ -288,9 +317,19 @@ class SseSink {
 class ServletStreamListener implements LlmStreamListener {
     final SseSink sink
     final LlmClientImpl client
-    ServletStreamListener(SseSink sink, LlmClientImpl client) {
+    final boolean structured
+    private GatewayEvents events
+    ServletStreamListener(SseSink sink, LlmClientImpl client) { this(sink, client, false) }
+    ServletStreamListener(SseSink sink, LlmClientImpl client, boolean structured) {
         this.sink = sink
         this.client = client
+        this.structured = structured
+    }
+    @Override void onEvent(LlmResponseEvent event) {
+        if (!structured) return
+        if (events == null) events = new GatewayEvents(client?.convId(), client?.currentRunId())
+        Map<String, Object> out = events.toBrowser(event)
+        if (out != null) emit(GatewayEvents.SSE_EVENT, out)
     }
     private void emit(String name, Object data) {
         if (sink.disconnected) return
@@ -327,7 +366,10 @@ class ServletStreamListener implements LlmStreamListener {
         emit("yield", LlmGateway.yieldData(pendingClientCalls))
     }
     @Override void onComplete(LlmResponse response) {
-        emit("done", LlmGateway.doneData(response))
+        Map<String, Object> done = LlmGateway.doneData(response)
+        Map<String, Object> structured = GatewayInput.structuredOutput(client, response)
+        if (structured != null) done.put("structuredOutput", structured)
+        emit("done", done)
     }
     @Override void onError(LlmException error) { emit("error", LlmGateway.errorData(error)) }
     @Override void onFailure(Throwable t) { emit("error", LlmGateway.errorData(t)) }

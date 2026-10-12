@@ -1,0 +1,1161 @@
+{
+ "contract": "2026-04-24",
+ "schemaSha256": "693f26090d206230ed22b336681f547a2882cf5b131e86743966cf71bbdeedab",
+ "statuses": {
+  "typed": "parsed or emitted through the typed model and covered by a test",
+  "partial": "typed in part or without a dedicated test",
+  "recorded": "accepted and persisted, no semantic handling",
+  "opaque": "passed through unchanged, not validated",
+  "none": "not handled",
+  "container": "union or wrapper, covered by its members"
+ },
+ "paths": {
+  "/responses": {
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesProtocol.java",
+   "anchor": "/responses",
+   "tests": [
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ]
+  },
+  "/responses/compact": {
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesProtocol.java",
+   "anchor": "/compact",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy"
+   ]
+  }
+ },
+ "schemas": {
+  "AllowedToolChoice": {
+   "kind": "request",
+   "status": "opaque",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesLimits.java",
+   "anchor": "ALLOWED_TOOLS_MAX",
+   "tests": [
+    "src/test/groovy/OpenResponsesLimitsTests.groovy"
+   ],
+   "note": ""
+  },
+  "AllowedToolsParam": {
+   "kind": "request",
+   "status": "opaque",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesLimits.java",
+   "anchor": "ALLOWED_TOOLS_MAX",
+   "tests": [
+    "src/test/groovy/OpenResponsesLimitsTests.groovy"
+   ],
+   "note": "size-checked, otherwise passed through"
+  },
+  "Annotation": {
+   "kind": "content",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "start_index",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy"
+   ],
+   "note": ""
+  },
+  "AssistantMessageItemParam": {
+   "kind": "request item",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "\"role\"",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy",
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": ""
+  },
+  "CompactResource": {
+   "kind": "compact",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesProtocol.java",
+   "anchor": "/compact",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy"
+   ],
+   "note": ""
+  },
+  "CompactResponseMethodPublicBody": {
+   "kind": "compact",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesProtocol.java",
+   "anchor": "/compact",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy"
+   ],
+   "note": ""
+  },
+  "CompactionBody": {
+   "kind": "compact",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesProtocol.java",
+   "anchor": "/compact",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy"
+   ],
+   "note": ""
+  },
+  "CompactionSummaryItemParam": {
+   "kind": "request item",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "encrypted_content",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy"
+   ],
+   "note": ""
+  },
+  "CreateResponseBody": {
+   "kind": "request",
+   "status": "partial",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "\"previous_response_id\"",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy",
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy",
+    "src/test/groovy/OpenResponsesLimitsTests.groovy"
+   ],
+   "note": "typed: model, input, previous_response_id, store, stream, max_output_tokens, temperature, tools, parallel_tool_calls, max_tool_calls; the rest passes through LlmResponseOptions and is only range-checked by OpenResponsesLimits"
+  },
+  "DetailEnum": {
+   "kind": "enum",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "\"detail\"",
+   "tests": [
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": ""
+  },
+  "DeveloperMessageItemParam": {
+   "kind": "request item",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "\"role\"",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy",
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": ""
+  },
+  "EmptyModelParam": {
+   "kind": "request",
+   "status": "opaque",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "hasField",
+   "tests": [
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": "passed through as a response option; no typed handling"
+  },
+  "Error": {
+   "kind": "response",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "\"error\"",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy"
+   ],
+   "note": ""
+  },
+  "ErrorPayload": {
+   "kind": "response",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "providerErrorCode",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy"
+   ],
+   "note": ""
+  },
+  "ErrorStreamingEvent": {
+   "kind": "stream event",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesStreamState.java",
+   "anchor": "error",
+   "tests": [
+    "src/test/groovy/org/moqui/impl/llm/OpenResponsesStreamStateTests.groovy",
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ],
+   "note": "lifecycle checked by OpenResponsesStreamState and persisted incrementally as it arrives; also feeds the assembled result"
+  },
+  "FunctionCall": {
+   "kind": "response item",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "parseOutputItems",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy",
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ],
+   "note": ""
+  },
+  "FunctionCallItemParam": {
+   "kind": "request item",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "function_call",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy",
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy",
+    "src/test/groovy/OpenResponsesLimitsTests.groovy"
+   ],
+   "note": ""
+  },
+  "FunctionCallItemStatus": {
+   "kind": "enum",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "\"status\"",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy"
+   ],
+   "note": "carried as string; not validated against the enum"
+  },
+  "FunctionCallOutput": {
+   "kind": "response item",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "parseOutputItems",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy",
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ],
+   "note": ""
+  },
+  "FunctionCallOutputItemParam": {
+   "kind": "request item",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "function_call_output",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy",
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": ""
+  },
+  "FunctionCallOutputStatusEnum": {
+   "kind": "enum",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "\"status\"",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy"
+   ],
+   "note": "carried as string; not validated against the enum"
+  },
+  "FunctionCallStatus": {
+   "kind": "enum",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "\"status\"",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy"
+   ],
+   "note": "carried as string; not validated against the enum"
+  },
+  "FunctionTool": {
+   "kind": "response",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "\"parameters\"",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy"
+   ],
+   "note": ""
+  },
+  "FunctionToolChoice": {
+   "kind": "request",
+   "status": "opaque",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "hasField",
+   "tests": [
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": "passed through as a response option; no typed handling"
+  },
+  "FunctionToolParam": {
+   "kind": "request",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "\"parameters\"",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy",
+    "src/test/groovy/OpenResponsesLimitsTests.groovy"
+   ],
+   "note": ""
+  },
+  "ImageDetail": {
+   "kind": "enum",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "\"detail\"",
+   "tests": [
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": ""
+  },
+  "IncludeEnum": {
+   "kind": "request",
+   "status": "opaque",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "hasField",
+   "tests": [
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": "passed through as a response option; not validated"
+  },
+  "IncompleteDetails": {
+   "kind": "response",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "incomplete_details",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy"
+   ],
+   "note": ""
+  },
+  "InputFileContent": {
+   "kind": "content",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "file_data",
+   "tests": [
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": ""
+  },
+  "InputFileContentParam": {
+   "kind": "content",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "file_data",
+   "tests": [
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy",
+    "src/test/groovy/OpenResponsesLimitsTests.groovy"
+   ],
+   "note": ""
+  },
+  "InputImageContent": {
+   "kind": "content",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "image_url",
+   "tests": [
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": ""
+  },
+  "InputImageContentParamAutoParam": {
+   "kind": "content",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "image_url",
+   "tests": [
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy",
+    "src/test/groovy/OpenResponsesLimitsTests.groovy"
+   ],
+   "note": ""
+  },
+  "InputTextContent": {
+   "kind": "content",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "\"text\"",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy",
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": ""
+  },
+  "InputTextContentParam": {
+   "kind": "content",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "\"text\"",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy",
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": ""
+  },
+  "InputTokensDetails": {
+   "kind": "response",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "input_tokens_details",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy",
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ],
+   "note": ""
+  },
+  "InputVideoContent": {
+   "kind": "content",
+   "status": "partial",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "video_url",
+   "tests": [],
+   "note": "typed field, no test"
+  },
+  "ItemField": {
+   "kind": "union",
+   "status": "container",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "parseOutputItems",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy"
+   ],
+   "note": "union of response items; unknown types are kept raw"
+  },
+  "ItemParam": {
+   "kind": "union",
+   "status": "container",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "\"type\"",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy"
+   ],
+   "note": "union of the item params above"
+  },
+  "ItemReferenceParam": {
+   "kind": "request item",
+   "status": "partial",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "reference_id",
+   "tests": [],
+   "note": "carried as LlmItem.referenceId; no dedicated test"
+  },
+  "JsonObjectResponseFormat": {
+   "kind": "request",
+   "status": "opaque",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "hasField",
+   "tests": [
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": "passed through as a response option; not validated"
+  },
+  "JsonSchemaResponseFormat": {
+   "kind": "request",
+   "status": "opaque",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "hasField",
+   "tests": [
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": "passed through as a response option; not validated"
+  },
+  "JsonSchemaResponseFormatParam": {
+   "kind": "request",
+   "status": "opaque",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "hasField",
+   "tests": [
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": "passed through as a response option; not validated"
+  },
+  "LogProb": {
+   "kind": "content",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "top_logprobs",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy"
+   ],
+   "note": ""
+  },
+  "Message": {
+   "kind": "response item",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "parseOutputItems",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy",
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ],
+   "note": ""
+  },
+  "MessageRole": {
+   "kind": "enum",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "\"status\"",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy"
+   ],
+   "note": "carried as string; not validated against the enum"
+  },
+  "MessageStatus": {
+   "kind": "enum",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "\"status\"",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy"
+   ],
+   "note": "carried as string; not validated against the enum"
+  },
+  "MetadataParam": {
+   "kind": "request",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesLimits.java",
+   "anchor": "METADATA_VALUE_MAX",
+   "tests": [
+    "src/test/groovy/OpenResponsesLimitsTests.groovy"
+   ],
+   "note": ""
+  },
+  "OutputTextContent": {
+   "kind": "content",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "\"text\"",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy",
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": ""
+  },
+  "OutputTextContentParam": {
+   "kind": "content",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "\"text\"",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy",
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": ""
+  },
+  "OutputTokensDetails": {
+   "kind": "response",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "input_tokens_details",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy",
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ],
+   "note": ""
+  },
+  "Reasoning": {
+   "kind": "response item",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "parseOutputItems",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy",
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ],
+   "note": ""
+  },
+  "ReasoningBody": {
+   "kind": "response item",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "parseOutputItems",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy",
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ],
+   "note": ""
+  },
+  "ReasoningEffortEnum": {
+   "kind": "request",
+   "status": "opaque",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "hasField",
+   "tests": [
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": "passed through as a response option; not validated"
+  },
+  "ReasoningItemParam": {
+   "kind": "request item",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "encrypted_content",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy"
+   ],
+   "note": "summary and encrypted_content round-trip; replay is the caller's responsibility"
+  },
+  "ReasoningParam": {
+   "kind": "request",
+   "status": "opaque",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "hasField",
+   "tests": [
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": "passed through as a response option; not validated"
+  },
+  "ReasoningSummaryContentParam": {
+   "kind": "content",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "\"text\"",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy",
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": ""
+  },
+  "ReasoningSummaryEnum": {
+   "kind": "request",
+   "status": "opaque",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "hasField",
+   "tests": [
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": "passed through as a response option; not validated"
+  },
+  "ReasoningTextContent": {
+   "kind": "content",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "\"text\"",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy",
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": ""
+  },
+  "RefusalContent": {
+   "kind": "content",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "\"refusal\"",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy"
+   ],
+   "note": ""
+  },
+  "RefusalContentParam": {
+   "kind": "content",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "\"refusal\"",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy"
+   ],
+   "note": ""
+  },
+  "ResponseCompletedStreamingEvent": {
+   "kind": "stream event",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesStreamState.java",
+   "anchor": "response.completed",
+   "tests": [
+    "src/test/groovy/org/moqui/impl/llm/OpenResponsesStreamStateTests.groovy",
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ],
+   "note": "lifecycle checked by OpenResponsesStreamState and persisted incrementally as it arrives; also feeds the assembled result"
+  },
+  "ResponseContentPartAddedStreamingEvent": {
+   "kind": "stream event",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesStreamState.java",
+   "anchor": "response.content_part.added",
+   "tests": [
+    "src/test/groovy/org/moqui/impl/llm/OpenResponsesStreamStateTests.groovy",
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ],
+   "note": "lifecycle checked by OpenResponsesStreamState and persisted incrementally as it arrives; not used to build the result, which comes from the terminal response"
+  },
+  "ResponseContentPartDoneStreamingEvent": {
+   "kind": "stream event",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesStreamState.java",
+   "anchor": "response.content_part.done",
+   "tests": [
+    "src/test/groovy/org/moqui/impl/llm/OpenResponsesStreamStateTests.groovy",
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ],
+   "note": "lifecycle checked by OpenResponsesStreamState and persisted incrementally as it arrives; not used to build the result, which comes from the terminal response"
+  },
+  "ResponseCreatedStreamingEvent": {
+   "kind": "stream event",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesStreamState.java",
+   "anchor": "response.created",
+   "tests": [
+    "src/test/groovy/org/moqui/impl/llm/OpenResponsesStreamStateTests.groovy",
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ],
+   "note": "lifecycle checked by OpenResponsesStreamState and persisted incrementally as it arrives; also feeds the assembled result"
+  },
+  "ResponseFailedStreamingEvent": {
+   "kind": "stream event",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesStreamState.java",
+   "anchor": "response.failed",
+   "tests": [
+    "src/test/groovy/org/moqui/impl/llm/OpenResponsesStreamStateTests.groovy",
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ],
+   "note": "lifecycle checked by OpenResponsesStreamState and persisted incrementally as it arrives; also feeds the assembled result"
+  },
+  "ResponseFunctionCallArgumentsDeltaStreamingEvent": {
+   "kind": "stream event",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesStreamState.java",
+   "anchor": "response.function_call_arguments.delta",
+   "tests": [
+    "src/test/groovy/org/moqui/impl/llm/OpenResponsesStreamStateTests.groovy",
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ],
+   "note": "lifecycle checked by OpenResponsesStreamState and persisted incrementally as it arrives; also feeds the assembled result"
+  },
+  "ResponseFunctionCallArgumentsDoneStreamingEvent": {
+   "kind": "stream event",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesStreamState.java",
+   "anchor": "response.function_call_arguments.done",
+   "tests": [
+    "src/test/groovy/org/moqui/impl/llm/OpenResponsesStreamStateTests.groovy",
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ],
+   "note": "lifecycle checked by OpenResponsesStreamState and persisted incrementally as it arrives; also feeds the assembled result"
+  },
+  "ResponseInProgressStreamingEvent": {
+   "kind": "stream event",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesStreamState.java",
+   "anchor": "response.in_progress",
+   "tests": [
+    "src/test/groovy/org/moqui/impl/llm/OpenResponsesStreamStateTests.groovy",
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ],
+   "note": "lifecycle checked by OpenResponsesStreamState and persisted incrementally as it arrives; not used to build the result, which comes from the terminal response"
+  },
+  "ResponseIncompleteStreamingEvent": {
+   "kind": "stream event",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesStreamState.java",
+   "anchor": "response.incomplete",
+   "tests": [
+    "src/test/groovy/org/moqui/impl/llm/OpenResponsesStreamStateTests.groovy",
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ],
+   "note": "lifecycle checked by OpenResponsesStreamState and persisted incrementally as it arrives; also feeds the assembled result"
+  },
+  "ResponseOutputItemAddedStreamingEvent": {
+   "kind": "stream event",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesStreamState.java",
+   "anchor": "response.output_item.added",
+   "tests": [
+    "src/test/groovy/org/moqui/impl/llm/OpenResponsesStreamStateTests.groovy",
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ],
+   "note": "lifecycle checked by OpenResponsesStreamState and persisted incrementally as it arrives; also feeds the assembled result"
+  },
+  "ResponseOutputItemDoneStreamingEvent": {
+   "kind": "stream event",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesStreamState.java",
+   "anchor": "response.output_item.done",
+   "tests": [
+    "src/test/groovy/org/moqui/impl/llm/OpenResponsesStreamStateTests.groovy",
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ],
+   "note": "lifecycle checked by OpenResponsesStreamState and persisted incrementally as it arrives; also feeds the assembled result"
+  },
+  "ResponseOutputTextAnnotationAddedStreamingEvent": {
+   "kind": "stream event",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesStreamState.java",
+   "anchor": "response.output_text.annotation.added",
+   "tests": [
+    "src/test/groovy/org/moqui/impl/llm/OpenResponsesStreamStateTests.groovy",
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ],
+   "note": "lifecycle checked by OpenResponsesStreamState and persisted incrementally as it arrives; not used to build the result, which comes from the terminal response"
+  },
+  "ResponseOutputTextDeltaStreamingEvent": {
+   "kind": "stream event",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesStreamState.java",
+   "anchor": "response.output_text.delta",
+   "tests": [
+    "src/test/groovy/org/moqui/impl/llm/OpenResponsesStreamStateTests.groovy",
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ],
+   "note": "lifecycle checked by OpenResponsesStreamState and persisted incrementally as it arrives; also feeds the assembled result"
+  },
+  "ResponseOutputTextDoneStreamingEvent": {
+   "kind": "stream event",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesStreamState.java",
+   "anchor": "response.output_text.done",
+   "tests": [
+    "src/test/groovy/org/moqui/impl/llm/OpenResponsesStreamStateTests.groovy",
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ],
+   "note": "lifecycle checked by OpenResponsesStreamState and persisted incrementally as it arrives; not used to build the result, which comes from the terminal response"
+  },
+  "ResponseQueuedStreamingEvent": {
+   "kind": "stream event",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesStreamState.java",
+   "anchor": "response.queued",
+   "tests": [
+    "src/test/groovy/org/moqui/impl/llm/OpenResponsesStreamStateTests.groovy",
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ],
+   "note": "lifecycle checked by OpenResponsesStreamState and persisted incrementally as it arrives; not used to build the result, which comes from the terminal response"
+  },
+  "ResponseReasoningDeltaStreamingEvent": {
+   "kind": "stream event",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesStreamState.java",
+   "anchor": "response.reasoning.delta",
+   "tests": [
+    "src/test/groovy/org/moqui/impl/llm/OpenResponsesStreamStateTests.groovy",
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ],
+   "note": "lifecycle checked by OpenResponsesStreamState and persisted incrementally as it arrives; not used to build the result, which comes from the terminal response"
+  },
+  "ResponseReasoningDoneStreamingEvent": {
+   "kind": "stream event",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesStreamState.java",
+   "anchor": "response.reasoning.done",
+   "tests": [
+    "src/test/groovy/org/moqui/impl/llm/OpenResponsesStreamStateTests.groovy",
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ],
+   "note": "lifecycle checked by OpenResponsesStreamState and persisted incrementally as it arrives; not used to build the result, which comes from the terminal response"
+  },
+  "ResponseReasoningSummaryDeltaStreamingEvent": {
+   "kind": "stream event",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesStreamState.java",
+   "anchor": "response.reasoning_summary_text.delta",
+   "tests": [
+    "src/test/groovy/org/moqui/impl/llm/OpenResponsesStreamStateTests.groovy",
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ],
+   "note": "lifecycle checked by OpenResponsesStreamState and persisted incrementally as it arrives; not used to build the result, which comes from the terminal response"
+  },
+  "ResponseReasoningSummaryDoneStreamingEvent": {
+   "kind": "stream event",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesStreamState.java",
+   "anchor": "response.reasoning_summary_text.done",
+   "tests": [
+    "src/test/groovy/org/moqui/impl/llm/OpenResponsesStreamStateTests.groovy",
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ],
+   "note": "lifecycle checked by OpenResponsesStreamState and persisted incrementally as it arrives; not used to build the result, which comes from the terminal response"
+  },
+  "ResponseReasoningSummaryPartAddedStreamingEvent": {
+   "kind": "stream event",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesStreamState.java",
+   "anchor": "response.reasoning_summary_part.added",
+   "tests": [
+    "src/test/groovy/org/moqui/impl/llm/OpenResponsesStreamStateTests.groovy",
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ],
+   "note": "lifecycle checked by OpenResponsesStreamState and persisted incrementally as it arrives; not used to build the result, which comes from the terminal response"
+  },
+  "ResponseReasoningSummaryPartDoneStreamingEvent": {
+   "kind": "stream event",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesStreamState.java",
+   "anchor": "response.reasoning_summary_part.done",
+   "tests": [
+    "src/test/groovy/org/moqui/impl/llm/OpenResponsesStreamStateTests.groovy",
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ],
+   "note": "lifecycle checked by OpenResponsesStreamState and persisted incrementally as it arrives; not used to build the result, which comes from the terminal response"
+  },
+  "ResponseRefusalDeltaStreamingEvent": {
+   "kind": "stream event",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesStreamState.java",
+   "anchor": "response.refusal.delta",
+   "tests": [
+    "src/test/groovy/org/moqui/impl/llm/OpenResponsesStreamStateTests.groovy",
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ],
+   "note": "lifecycle checked by OpenResponsesStreamState and persisted incrementally as it arrives; not used to build the result, which comes from the terminal response"
+  },
+  "ResponseRefusalDoneStreamingEvent": {
+   "kind": "stream event",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesStreamState.java",
+   "anchor": "response.refusal.done",
+   "tests": [
+    "src/test/groovy/org/moqui/impl/llm/OpenResponsesStreamStateTests.groovy",
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ],
+   "note": "lifecycle checked by OpenResponsesStreamState and persisted incrementally as it arrives; not used to build the result, which comes from the terminal response"
+  },
+  "ResponseResource": {
+   "kind": "response",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "parseOutputItems",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy",
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ],
+   "note": "returned options are not yet recorded separately from requested ones (gap G13)"
+  },
+  "ResponsesToolParam": {
+   "kind": "union",
+   "status": "container",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "\"function\"",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy"
+   ],
+   "note": "only function tools are typed"
+  },
+  "ServiceTierEnum": {
+   "kind": "request",
+   "status": "opaque",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "hasField",
+   "tests": [
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": "passed through as a response option; not validated"
+  },
+  "SpecificFunctionParam": {
+   "kind": "request",
+   "status": "opaque",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "hasField",
+   "tests": [
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": "passed through as a response option; no typed handling"
+  },
+  "SpecificToolChoiceParam": {
+   "kind": "request",
+   "status": "opaque",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "hasField",
+   "tests": [
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": "passed through as a response option; no typed handling"
+  },
+  "StreamOptionsParam": {
+   "kind": "request",
+   "status": "opaque",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "hasField",
+   "tests": [
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": "passed through as a response option; not validated"
+  },
+  "SummaryTextContent": {
+   "kind": "content",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "\"text\"",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy",
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": ""
+  },
+  "SystemMessageItemParam": {
+   "kind": "request item",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "\"role\"",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy",
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": ""
+  },
+  "TextContent": {
+   "kind": "content",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "\"text\"",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy",
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": ""
+  },
+  "TextField": {
+   "kind": "request",
+   "status": "opaque",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "hasField",
+   "tests": [
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": "passed through as a response option; not validated"
+  },
+  "TextFormatParam": {
+   "kind": "request",
+   "status": "opaque",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "hasField",
+   "tests": [
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": "passed through as a response option; not validated"
+  },
+  "TextParam": {
+   "kind": "request",
+   "status": "opaque",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "hasField",
+   "tests": [
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": "passed through as a response option; not validated"
+  },
+  "TextResponseFormat": {
+   "kind": "request",
+   "status": "opaque",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "hasField",
+   "tests": [
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": "passed through as a response option; not validated"
+  },
+  "Tool": {
+   "kind": "union",
+   "status": "container",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "\"function\"",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy"
+   ],
+   "note": ""
+  },
+  "ToolChoiceParam": {
+   "kind": "request",
+   "status": "opaque",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "hasField",
+   "tests": [
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": "passed through as a response option; no typed handling"
+  },
+  "ToolChoiceValueEnum": {
+   "kind": "request",
+   "status": "opaque",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "hasField",
+   "tests": [
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": "passed through as a response option; no typed handling"
+  },
+  "TopLogProb": {
+   "kind": "content",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "top_logprobs",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy"
+   ],
+   "note": ""
+  },
+  "TruncationEnum": {
+   "kind": "request",
+   "status": "opaque",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "hasField",
+   "tests": [
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": "passed through as a response option; not validated"
+  },
+  "UrlCitationBody": {
+   "kind": "content",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "start_index",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy"
+   ],
+   "note": ""
+  },
+  "UrlCitationParam": {
+   "kind": "content",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "start_index",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy"
+   ],
+   "note": ""
+  },
+  "Usage": {
+   "kind": "response",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "input_tokens_details",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy",
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ],
+   "note": ""
+  },
+  "UserMessageItemParam": {
+   "kind": "request item",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "\"role\"",
+   "tests": [
+    "src/test/groovy/LlmResponsesProtocolTests.groovy",
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": ""
+  },
+  "VerbosityEnum": {
+   "kind": "request",
+   "status": "opaque",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesCodec.java",
+   "anchor": "hasField",
+   "tests": [
+    "src/test/groovy/OpenResponsesWireFixtureTests.groovy"
+   ],
+   "note": "passed through as a response option; not validated"
+  },
+  "WebSocketErrorEvent": {
+   "kind": "websocket",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesStreamState.java",
+   "anchor": "\"error\"",
+   "tests": [
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ],
+   "note": "envelope kept in the result: status, type, code, message, param"
+  },
+  "WebSocketResponseCreateEvent": {
+   "kind": "websocket",
+   "status": "typed",
+   "impl": "src/main/groovy/org/moqui/impl/llm/OpenResponsesProtocol.java",
+   "anchor": "\"response.create\"",
+   "tests": [
+    "src/test/groovy/org/moqui/impl/llm/LlmResponsesClientIntegrationTests.groovy"
+   ],
+   "note": "sent over a session that stays open between turns (OpenResponsesWebSocketSession)"
+  }
+ }
+}

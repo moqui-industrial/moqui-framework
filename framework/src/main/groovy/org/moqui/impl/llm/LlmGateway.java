@@ -55,7 +55,9 @@ public final class LlmGateway {
     private LlmGateway() { }
 
     public static final class Route {
-        public enum Op { CHAT, RESUME, CANCEL, GET_CONVERSATION, LIST_CONVERSATIONS, GET_PROFILES, DELETE_CONVERSATION }
+        public enum Op { CHAT, RESUME, CANCEL, GET_CONVERSATION, LIST_CONVERSATIONS, GET_PROFILES, DELETE_CONVERSATION, GET_ATTACHMENT, COMPACT }
+        /** The attachment index of GET_ATTACHMENT. */
+        public int attachmentIndex = -1;
         public final Op op;
         public final String conversationId;
         public Route(Op op, String conversationId) {
@@ -63,10 +65,10 @@ public final class LlmGateway {
             this.conversationId = conversationId;
         }
         public boolean isPost() {
-            return op == Op.CHAT || op == Op.RESUME || op == Op.CANCEL;
+            return op == Op.CHAT || op == Op.RESUME || op == Op.CANCEL || op == Op.COMPACT;
         }
         public boolean isGet() {
-            return op == Op.GET_CONVERSATION || op == Op.LIST_CONVERSATIONS || op == Op.GET_PROFILES;
+            return op == Op.GET_CONVERSATION || op == Op.LIST_CONVERSATIONS || op == Op.GET_PROFILES || op == Op.GET_ATTACHMENT;
         }
         public boolean isDelete() { return op == Op.DELETE_CONVERSATION; }
     }
@@ -100,6 +102,16 @@ public final class LlmGateway {
                 return new Route(Route.Op.GET_CONVERSATION, p[2]);
             }
             if (p.length == 4 && "cancel".equals(p[3])) return new Route(Route.Op.CANCEL, p[2]);
+            if (p.length == 4 && "compact".equals(p[3])) return new Route(Route.Op.COMPACT, p[2]);
+            if (p.length == 5 && "attachments".equals(p[3])) {
+                try {
+                    int index = Integer.parseInt(p[4]);
+                    if (index < 0) return null;
+                    Route route = new Route(Route.Op.GET_ATTACHMENT, p[2]);
+                    route.attachmentIndex = index;
+                    return route;
+                } catch (NumberFormatException e) { return null; }
+            }
             return null;
         }
         return null;
@@ -149,7 +161,7 @@ public final class LlmGateway {
     }
 
     /**
-     * Request tools may only subset {request, write_ui, browse, find_basic, run_service, find_skill, enter_sim, pin}.
+     * Request tools may only subset {request, write_ui, browse, find_basic, run_service, find_skill, enter_sim, pin} and the tools of llm_gateway_service_tools.
      * write-ui is accepted as write_ui. Unknown names are 400, not silently ignored.
      * find_basic is a legal name here; attachServletTools adds the tool only when the profile has an allow list.
      */
@@ -174,7 +186,7 @@ public final class LlmGateway {
             if ("run-service".equals(n)) n = "run_service";
             if (!"request".equals(n) && !"write_ui".equals(n) && !"browse".equals(n) && !"run_service".equals(n)
                     && !"find_skill".equals(n) && !"enter_sim".equals(n) && !"pin".equals(n)
-                    && !FindBasicTool.NAME.equals(n))
+                    && !FindBasicTool.NAME.equals(n) && !GatewayServiceTools.configured().containsKey(n))
                 throw new LlmException("tools may only subset {request, write_ui, browse, find_basic, run_service, find_skill, enter_sim, pin}",
                         null, LlmFinishReason.ERROR, 400, null, null);
             seen.add(n);
@@ -211,6 +223,8 @@ public final class LlmGateway {
         boolean wantEnterSim = tools.contains("enter_sim");
         boolean wantPin = tools.contains("pin") || wantFindSkill;
         boolean wantFindBasic = tools.contains(FindBasicTool.NAME);
+        for (Map.Entry<String, String> serviceTool : GatewayServiceTools.configured().entrySet())
+            if (tools.contains(serviceTool.getKey())) client.tool(LlmTool.service(serviceTool.getValue(), serviceTool.getKey()));
         if (wantRequest) {
             boolean unprefixed = profile != null && profile.allowUnprefixedRequest;
             LlmTool rt = requestToolForServlet(profile != null ? profile.allowedPaths : null, unprefixed);
@@ -290,24 +304,41 @@ public final class LlmGateway {
             }
         }
 
+        // pins, skills and widgets are context of the Assist canvas; a profile of an item protocol that cannot write a screen is a
+        // plain conversation and gets none of it (a model would answer the context instead of the person)
+        boolean itemProtocol = impl.profile.protocol.getCapabilities().contains(org.moqui.llm.LlmProtocol.Capability.ITEM_TRAJECTORY);
+        boolean assistContext = !itemProtocol || impl.profile.allowWriteUi;
         applyForceSkillUse(impl, body);
         applyWriteMode(impl, body);
         applySystem(impl, body);
         appendForceSkillUseSystem(impl);
         String session = SessionFacts.text(impl.ec);
-        String modeNote = writeModeNote(currentWriteMode(impl));
+        String modeNote = assistContext ? writeModeNote(currentWriteMode(impl)) : null;
         if (modeNote != null && !modeNote.isBlank()) {
             if (session == null || session.isBlank()) session = modeNote;
             else session = session + "\n" + modeNote;
         }
         refreshContext(impl, "session", session);
-        refreshContext(impl, "pins", PinTool.text(impl));
-        refreshContext(impl, "skill-widgets", SkillIndex.activeWidgetText(impl.ec, impl.activeSkillName));
-        String user = str(body.get("user"));
-        if (user != null) {
-            impl.user(user);
-            injectSkills(impl, user);
+        if (assistContext) {
+            refreshContext(impl, "pins", PinTool.text(impl));
+            refreshContext(impl, "skill-widgets", SkillIndex.activeWidgetText(impl.ec, impl.activeSkillName));
         }
+        String user = str(body.get("user"));
+        java.util.List<org.moqui.llm.LlmContentPart> attachments = GatewayInput.attachments(body.get("attachments"));
+        if (!attachments.isEmpty()) {
+            if (!itemProtocol) throw new LlmException("attachments need an Open Responses profile", null, LlmFinishReason.ERROR, 400, profileName, null);
+            impl.inputItems(java.util.Collections.singletonList(GatewayInput.userMessage(user, attachments)));
+            if (user != null && assistContext) injectSkills(impl, user);
+        } else if (user != null) {
+            impl.user(user);
+            if (assistContext) injectSkills(impl, user);
+        }
+        org.moqui.llm.LlmResponseOptions browserOptions = GatewayInput.options(body.get("options"));
+        org.moqui.llm.LlmTransport upstream = GatewayInput.upstreamTransport(body.get("upstreamTransport"));
+        if ((browserOptions != null || upstream != null) && !itemProtocol)
+            throw new LlmException("options and upstreamTransport need an Open Responses profile", null, LlmFinishReason.ERROR, 400, profileName, null);
+        if (browserOptions != null) impl.responseOptions(browserOptions);
+        if (upstream != null) impl.transport(upstream);
 
         Object msgs = body.get("messages");
         if (msgs instanceof List) {
@@ -327,6 +358,8 @@ public final class LlmGateway {
         Object maxTok = body.get("maxTokens");
         if (maxTok instanceof Number) impl.maxTokens(((Number) maxTok).intValue());
         Object extraBody = body.get("extraBody");
+        if (extraBody instanceof Map && itemProtocol)
+            throw new LlmException("extraBody is not accepted for an Open Responses profile; use options", null, LlmFinishReason.ERROR, 400, profileName, null);
         if (extraBody instanceof Map) {
             @SuppressWarnings("unchecked")
             Map<String, Object> extraMap = (Map<String, Object>) extraBody;
@@ -491,7 +524,11 @@ public final class LlmGateway {
     public static Map<String, Object> chat(ExecutionContext ec, Map<String, Object> body) {
         return withoutCallerTx(ec, () -> {
             LlmClientImpl client = prepareClient(ec, body, false);
-            return responseToMap(client.call());
+            LlmResponse answer = client.call();
+            Map<String, Object> out = responseToMap(answer);
+            Map<String, Object> structured = GatewayInput.structuredOutput(client, answer);
+            if (structured != null) out.put("structuredOutput", structured);
+            return out;
         });
     }
     public static Map<String, Object> resume(ExecutionContext ec, Map<String, Object> body) {
@@ -525,6 +562,37 @@ public final class LlmGateway {
         out.put("httpStatus", 409);
         out.put("message", "Conversation is " + status + " (cancel requires Streaming or Yielded)");
         return out;
+    }
+
+    /** Media types a browser may be given inline; anything else is handed over as a download. */
+    public static final java.util.Set<String> INLINE_TYPES = new java.util.LinkedHashSet<>(java.util.Arrays.asList(
+            "image/png", "image/jpeg", "image/gif", "image/webp"));
+
+    /** The bytes of an attachment of a conversation of the caller: {bytes, mediaType, filename}. */
+    public static Object[] getAttachment(ExecutionContext ec, String conversationId, int index) {
+        requireLlmGateway(ec);
+        LlmConversationImpl conv = LlmConversationImpl.load(ec, conversationId, true);
+        Object[] found = conv.attachmentAt(index);
+        if (found == null)
+            throw new LlmException("Conversation " + conversationId + " has no attachment " + index, null, LlmFinishReason.ERROR, 404, null, conversationId);
+        return found;
+    }
+
+    /** Compacts the trajectory of a conversation of the caller into a new head; the profile must support it. */
+    public static Map<String, Object> compact(ExecutionContext ec, String conversationId) {
+        requireLlmGateway(ec);
+        return withoutCallerTx(ec, () -> {
+            LlmConversationImpl conv = LlmConversationImpl.load(ec, conversationId, true);
+            LlmClientImpl client = (LlmClientImpl) ec.getLlm().getClient(conv.getProfileName());
+            client.conversation(conv);
+            org.moqui.llm.LlmCompactResult result = client.compact();
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("conversationId", conversationId);
+            out.put("compacted", Boolean.TRUE);
+            out.put("responseId", result.id);
+            out.put("outputItems", result.output != null ? result.output.size() : 0);
+            return out;
+        });
     }
 
     public static Map<String, Object> getConversationMap(ExecutionContext ec, String conversationId) {
@@ -744,6 +812,13 @@ public final class LlmGateway {
                         ? ((LlmFacadeImpl) facade).getProfileState(name) : null;
                 row.put("model", ps != null ? ps.model : null);
                 if (ps != null) {
+                    row.put("protocol", ps.protocol != null ? ps.protocol.getName() : null);
+                    List<String> protocolCapabilities = new ArrayList<>();
+                    if (ps.protocol != null) {
+                        for (org.moqui.llm.LlmProtocol.Capability capability : ps.protocol.getCapabilities())
+                            protocolCapabilities.add(capability.name().toLowerCase());
+                    }
+                    row.put("protocolCapabilities", protocolCapabilities);
                     row.put("allowWriteUi", ps.allowWriteUi);
                     row.put("allowBrowse", ps.allowBrowse);
                     row.put("allowRunService", ps.allowRunService);
@@ -751,6 +826,7 @@ public final class LlmGateway {
                     row.put("allowEnterSim", ps.allowEnterSim);
                     row.put("allowClientSystem", ps.allowClientSystem);
                     row.put("allowVueSfc", ps.allowVueSfc);
+                    row.put("serviceTools", new ArrayList<>(GatewayServiceTools.configured().keySet()));
                 }
                 out.add(row);
             } catch (ArtifactAuthorizationException ignored) {
@@ -770,9 +846,14 @@ public final class LlmGateway {
         Map<String, Object> out = new LinkedHashMap<>();
         if (r == null) return out;
         out.put("conversationId", r.conversationId);
+        out.put("runId", r.runId);
+        out.put("requestId", r.requestId);
+        out.put("responseId", r.responseId);
         out.put("content", r.content);
         out.put("finishReason", r.finishReason != null ? r.finishReason.name().toLowerCase() : null);
         out.put("yielded", r.yielded);
+        out.put("pending", r.pending);
+        if (r.pending) { out.put("pollable", r.pollable); out.put("pendingNote", r.errorMessage); }
         out.put("pendingToolCalls", toolCallsToMaps(r.getPendingToolCalls()));
         List<Map<String, Object>> tr = new ArrayList<>();
         if (r.toolResults != null) {
@@ -862,6 +943,12 @@ public final class LlmGateway {
         m.put("yielded", r != null && r.yielded);
         m.put("durationMs", r != null ? r.durationMs : 0L);
         m.put("model", r != null ? r.model : null);
+        if (r != null) {
+            m.put("conversationId", r.conversationId);
+            m.put("runId", r.runId);
+            m.put("requestId", r.requestId);
+            m.put("responseId", r.responseId);
+        }
         return m;
     }
     public static Map<String, Object> yieldData(List<LlmToolCall> pending) {
